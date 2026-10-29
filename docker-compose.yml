@@ -1,0 +1,14 @@
+# IB Gateway（无界面）+ IBC 自动登录。镜像：https://github.com/gnzsnz/ib-gateway-docker
+# 端口映射以该项目 README 为准；这里只绑定本机地址，不要对公网开放。
+services:
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    restart: always
+    env_file: .env
+    environment:
+      TRADING_MODE: ${TRADING_MODE:-paper}
+      READ_ONLY_API: "no"
+      TWOFA_TIMEOUT_ACTION: restart
+    ports:
+      - "127.0.0.1:4001:4003"   # live
+      - "127.0.0.1:4002:4004"   # paper
