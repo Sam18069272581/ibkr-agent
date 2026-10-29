@@ -108,12 +108,13 @@ class Broker:
         return out
 
     def last_prices(self, tickers: list[str]) -> dict[str, float]:
-        """参考价：中间价，没有就用收盘价。"""
+        """参考价：中间价；休市时没有买卖价，就用最新成交价，再没有就用收盘价。"""
         contracts = self.ib.qualifyContracts(*[Stock(t, "SMART", "USD") for t in tickers])
         out: dict[str, float] = {}
         for tk in self.ib.reqTickers(*contracts):
             bid, ask = _finite(tk.bid), _finite(tk.ask)
-            price = (bid + ask) / 2 if bid > 0 and ask > 0 else _finite(tk.close)
+            last, close = _finite(tk.last), _finite(tk.close)
+            price = (bid + ask) / 2 if bid > 0 and ask > 0 else (last if last > 0 else close)
             if price > 0:
                 out[tk.contract.symbol] = price
         return out
