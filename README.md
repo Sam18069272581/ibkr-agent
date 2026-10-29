@@ -17,27 +17,62 @@
    - 已持有的只在超额收益跌破 1% 时卖出。买入线和卖出线之间留一段缓冲，避免来回折腾。
    - 选中的股票等权分配，最多 6 只。单笔订单不低于 $200，买不起一股的直接跳过。
 5. **风控**（`risk.py`）：总开关、回撤熔断、不用融资、单只/行业上限、报价异常、订单数上限，任何一条不过就拒单。只下限价单，限价不会越过对手价。
-6. **记录**（`journal.py`）：打分、Claude 观点、订单、拒单原因全部写进 `data/journal.sqlite`，方便复盘。
+6. **执行**（`broker.py`）：只在美东 09:45–15:45 下限价单，最多等 5 分钟成交，没成交的撤单。
+7. **对账**（`reconcile.py`）：运行开始时，把 IBKR 持仓和上次记录比对，发现有人手动交易过会告警；下单后，按成交重新算持仓，再和 IBKR 比对。
+8. **记录**（`journal.py`）：打分、Claude 观点、订单、拒单原因、成交、真实佣金、持仓快照全部写进 `data/journal.sqlite`。
 
-默认结果是“不交易”。只有每一关都通过，才会真的下单。
+默认结果是“不交易”。只有每一关都通过，才会真的下单。出错或对账不一致时，会通过 ntfy 推送到手机（可选）。
 
-## 快速开始
+## 模拟盘闭环：从 Paper 到实盘
+
+### 1. 准备 Paper 账户（一次性）
+
+- 在 IBKR Client Portal 的 Paper 账户设置里，把模拟资金重置成和实盘接近的金额（例如 2200 美元）。默认的模拟资金很大，跑出来的成绩不能代表实盘。
+- 在实盘账户设置里打开“与 Paper 账户共享行情”，否则模拟盘只能拿到延迟行情。
+- 在模拟盘里先把欧元换成美元。本系统不用融资，没有美元现金就不会买入。
+
+### 2. 安装并演练
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest                                   # 跑单元测试
 
-cp .env.example .env                     # 填 ANTHROPIC_API_KEY、SEC_USER_AGENT、IB 账号
+cp .env.example .env                     # 填 ANTHROPIC_API_KEY、SEC_USER_AGENT、IB 账号（Paper）
 cp config/settings.example.yaml config/settings.yaml
 docker compose up -d ib-gateway          # 启动 Paper 模式的 IB Gateway
 
 set -a; source .env; set +a
-ibkr-agent --skip-research               # 先不调 Claude，只看报表基线的结果
-ibkr-agent                               # 完整流程；dry_run: true 时只打印计划订单
+ibkr-agent run --skip-research           # 先不调 Claude，只看报表基线的结果
+ibkr-agent run                           # 完整流程；dry_run: true 时只打印计划订单
 ```
 
-确认演练结果合理后，再把 `config/settings.yaml` 里的 `dry_run` 改成 `false`，让它在 Paper 账户真实下单。上实盘时把 `mode` 改成 `live`、端口改成 `4001`，并把 `.env` 里的 `TRADING_MODE` 改成 `live`。
+### 3. 开始模拟盘交易并定时运行
+
+确认演练结果合理后，把 `config/settings.yaml` 里的 `dry_run` 改成 `false`，然后按 `deploy/crontab.example` 设置每周运行一次。运行机器和 IB Gateway 必须在那个时间开着。
+
+### 4. 看成绩，判断能否转实盘
+
+```bash
+ibkr-agent report      # 收益、基准、回撤、成本、胜率（仅参考）、门槛状态
+ibkr-agent graduate    # 门槛全部通过时退出码为 0
+```
+
+转实盘门槛（在 `graduation` 里配置），只统计非演练的运行：
+
+| 门槛 | 默认 |
+| --- | --- |
+| 连续成功运行（出错、对账不一致都会让计数清零） | 12 次（每周一次约 3 个月） |
+| 对账一致 | 0 次不一致 |
+| 实际手续费和滑点 / 模型估计 | ≤ 1.5 |
+| 回撤熔断 | 没有触发过 |
+| 收益相对 SPY | 落后不超过 5 个百分点 |
+
+胜率和超额收益会写进报告，但不作为门槛：长线持有的策略在 3 个月里样本太少，结果主要是运气。
+
+### 5. 转实盘
+
+把 `mode` 改成 `live`、端口改成 `4001`，把 `.env` 里的 `TRADING_MODE` 改成 `live`，并换一个新的 `journal_path`，让实盘成绩单独统计。第一次先用 `dry_run: true` 演练一次。
 
 紧急停止：`touch data/KILL`，之后每次运行都不会下任何单。
 
@@ -66,7 +101,11 @@ src/ibkr_agent/
   costs.py         佣金、点差、滑点
   decision.py      打分、选股、目标仓位（纯函数）
   risk.py          风控与熔断（纯函数）
-  broker.py        IBKR 连接（ib_async）
-  journal.py       决策日志
-  cli.py           一次完整运行
+  broker.py        IBKR 连接、下单、等成交（ib_async）
+  reconcile.py     对账
+  journal.py       决策与成交日志
+  report.py        成绩与转实盘门槛
+  alerts.py        手机告警（ntfy）
+  cli.py           run / report / graduate
+deploy/            定时运行脚本与 crontab 示例
 ```

@@ -59,6 +59,23 @@ class ResearchConfig:
 
 
 @dataclass(frozen=True)
+class ExecutionConfig:
+    benchmark: str = "SPY"                 # 只用来比较成绩，不买入
+    trading_window_et: tuple[str, str] = ("09:45", "15:45")  # 美东时间，只在这个时段下单
+    fill_timeout_seconds: int = 300        # 等成交的最长时间，超时未成交的撤单
+
+
+@dataclass(frozen=True)
+class GraduationConfig:
+    """模拟盘转实盘的门槛。全部满足才算通过。"""
+
+    min_consecutive_ok_runs: int = 12      # 连续成功运行次数（每周一次约 3 个月）
+    max_cost_ratio: float = 1.5            # 实际成本 / 模型估计成本
+    max_underperformance: float = 0.05     # 落后基准不超过 5 个百分点
+    allow_drawdown_halt: bool = False      # 期间是否允许触发过回撤熔断
+
+
+@dataclass(frozen=True)
 class Settings:
     mode: str = "paper"
     dry_run: bool = True
@@ -69,6 +86,8 @@ class Settings:
     costs: CostConfig = field(default_factory=CostConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     research: ResearchConfig = field(default_factory=ResearchConfig)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    graduation: GraduationConfig = field(default_factory=GraduationConfig)
 
 
 def load_settings(path: str | Path) -> Settings:
@@ -86,4 +105,12 @@ def load_settings(path: str | Path) -> Settings:
         costs=CostConfig(**raw.get("costs", {})),
         risk=RiskConfig(**raw.get("risk", {})),
         research=ResearchConfig(**raw.get("research", {})),
+        execution=_execution(raw.get("execution", {})),
+        graduation=GraduationConfig(**raw.get("graduation", {})),
     )
+
+
+def _execution(raw: dict) -> ExecutionConfig:
+    if "trading_window_et" in raw:
+        raw = {**raw, "trading_window_et": tuple(raw["trading_window_et"])}
+    return ExecutionConfig(**raw)
