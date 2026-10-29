@@ -108,7 +108,8 @@ class Broker:
         return out
 
     def last_prices(self, tickers: list[str]) -> dict[str, float]:
-        """参考价：中间价；休市时没有买卖价，就用最新成交价，再没有就用收盘价。"""
+        """参考价：中间价；休市时没有买卖价，就用最新成交价，再没有就用收盘价。
+        行情快照拿不到（例如 Error 10197）时，退回到历史数据里最近一根日线的收盘价。"""
         contracts = self.ib.qualifyContracts(*[Stock(t, "SMART", "USD") for t in tickers])
         out: dict[str, float] = {}
         for tk in self.ib.reqTickers(*contracts):
@@ -117,7 +118,22 @@ class Broker:
             price = (bid + ask) / 2 if bid > 0 and ask > 0 else (last if last > 0 else close)
             if price > 0:
                 out[tk.contract.symbol] = price
+        for c in contracts:
+            if c.symbol not in out and (close := self._historical_close(c)) > 0:
+                log.warning("%s 没有行情快照，改用最近日线收盘价 %.2f", c.symbol, close)
+                out[c.symbol] = close
         return out
+
+    def _historical_close(self, contract) -> float:
+        try:
+            bars = self.ib.reqHistoricalData(
+                contract, endDateTime="", durationStr="5 D", barSizeSetting="1 day",
+                whatToShow="TRADES", useRTH=True, timeout=30,
+            )
+        except Exception as e:  # 历史数据也拿不到时只记日志，由调用方决定怎么处理
+            log.warning("%s 历史数据获取失败：%s", contract.symbol, e)
+            return 0.0
+        return _finite(bars[-1].close) if bars else 0.0
 
     def execute(
         self, orders: list[ApprovedOrder], mids: dict[str, float], costs: CostConfig, timeout_s: int

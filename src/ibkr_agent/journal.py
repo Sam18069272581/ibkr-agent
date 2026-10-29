@@ -88,7 +88,7 @@ class Journal:
         self.db.executescript(SCHEMA)
 
     def high_water_mark(self) -> float:
-        row = self.db.execute("SELECT MAX(high_water_mark_usd) FROM runs WHERE status != 'error'").fetchone()
+        row = self.db.execute("SELECT MAX(high_water_mark_usd) FROM runs WHERE status != 'error' AND dry_run = 0").fetchone()
         return row[0] or 0.0
 
     def start_run(self, mode: str, dry_run: bool) -> int:
