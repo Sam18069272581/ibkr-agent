@@ -19,7 +19,8 @@ from .risk import AccountState, ApprovedOrder, Quote
 log = logging.getLogger(__name__)
 
 DELAYED_FROZEN = 4  # 没有实时行情订阅时退回延迟行情
-UNSET_DOUBLE = 1e300  # IBKR 用极大值表示“没有值”，例如开仓成交的已实现盈亏
+UNSET_DOUBLE = 1e300
+CONNECT_TIMEOUT_S = 20  # IBKR 用极大值表示“没有值”，例如开仓成交的已实现盈亏
 
 
 def _finite(x: float | None) -> float:
@@ -33,13 +34,22 @@ class Broker:
         self.ib = IB()
 
     def __enter__(self) -> "Broker":
-        self.ib.connect(
-            self._cfg.host,
-            self._cfg.port,
-            clientId=self._cfg.client_id,
-            readonly=self._readonly,
-            account=self._cfg.account,
-        )
+        try:
+            self.ib.connect(
+                self._cfg.host,
+                self._cfg.port,
+                clientId=self._cfg.client_id,
+                timeout=CONNECT_TIMEOUT_S,
+                readonly=self._readonly,
+                account=self._cfg.account,
+            )
+        except (TimeoutError, ConnectionRefusedError) as e:
+            raise ConnectionError(
+                f"连不上 IB Gateway（{self._cfg.host}:{self._cfg.port}）。"
+                "请检查：网关是否已登录完成（docker compose logs ib-gateway）、"
+                "手机上的登录确认是否已同意、用的是否是模拟盘自己的账号、"
+                "同一账户是否在 TWS 或网页上同时登录。"
+            ) from e
         self.ib.reqMarketDataType(DELAYED_FROZEN)
         return self
 
