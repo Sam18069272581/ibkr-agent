@@ -18,6 +18,7 @@ from . import alerts
 from .broker import Broker
 from .config import Settings, load_settings
 from .decision import Candidate, plan
+from .env import load_dotenv
 from .fundamentals import EdgarClient
 from .journal import FillRecord, Journal
 from .reconcile import apply_fills, differences
@@ -164,6 +165,7 @@ def main() -> None:
     sub.add_parser("report", help="显示成绩")
     sub.add_parser("graduate", help="检查转实盘门槛，通过时退出码为 0")
     args = p.parse_args()
+    load_dotenv()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(message)s")
 
     if args.command in ("report", "graduate"):

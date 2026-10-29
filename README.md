@@ -49,7 +49,12 @@ ibkr-agent run                           # 完整流程；dry_run: true 时只�
 
 ### 3. 开始模拟盘交易并定时运行
 
-确认演练结果合理后，把 `config/settings.yaml` 里的 `dry_run` 改成 `false`，然后按 `deploy/crontab.example` 设置每周运行一次。运行机器和 IB Gateway 必须在那个时间开着。
+确认演练结果合理后，把 `config/settings.yaml` 里的 `dry_run` 改成 `false`，然后设置每周运行一次。运行机器和 IB Gateway 必须在那个时间开着。
+
+- Linux / macOS：按 `deploy/crontab.example` 加一行 cron。
+- Windows：在项目目录的 PowerShell 里运行 `powershell -ExecutionPolicy Bypass -File deploy\install_task_windows.ps1`，会注册每周二 16:30 的计划任务。
+
+程序会自动读取项目根目录的 `.env`，不需要手动导出环境变量。Windows 上的命令是 `.venv\Scripts\ibkr-agent run`。
 
 ### 4. 看成绩，判断能否转实盘
 
