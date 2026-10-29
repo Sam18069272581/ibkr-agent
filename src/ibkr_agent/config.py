@@ -63,7 +63,7 @@ class ExecutionConfig:
     benchmark: str = "SPY"                 # 只用来比较成绩，不买入
     trading_window_et: tuple[str, str] = ("09:45", "15:45")  # 美东时间，只在这个时段下单
     fill_timeout_seconds: int = 300        # 等成交的最长时间，超时未成交的撤单
-    market_data_type: int = 3              # 1 实时，3 延迟 15 分钟（免费，长线够用），4 延迟冻结
+    market_data_type: int = 4              # 1 实时，3 延迟 15 分钟，4 延迟冻结（休市时也返回最后价格，默认）
 
 
 @dataclass(frozen=True)

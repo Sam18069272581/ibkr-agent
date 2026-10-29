@@ -27,7 +27,7 @@ def _finite(x: float | None) -> float:
 
 
 class Broker:
-    def __init__(self, cfg: IbkrConfig, readonly: bool, market_data_type: int = 3):
+    def __init__(self, cfg: IbkrConfig, readonly: bool, market_data_type: int = 4):
         self._cfg = cfg
         self._market_data_type = market_data_type
         self._readonly = readonly
