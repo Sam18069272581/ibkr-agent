@@ -18,7 +18,6 @@ from .risk import AccountState, ApprovedOrder, Quote
 
 log = logging.getLogger(__name__)
 
-DELAYED_FROZEN = 4  # 没有实时行情订阅时退回延迟行情
 UNSET_DOUBLE = 1e300
 CONNECT_TIMEOUT_S = 20  # IBKR 用极大值表示“没有值”，例如开仓成交的已实现盈亏
 
@@ -28,8 +27,9 @@ def _finite(x: float | None) -> float:
 
 
 class Broker:
-    def __init__(self, cfg: IbkrConfig, readonly: bool):
+    def __init__(self, cfg: IbkrConfig, readonly: bool, market_data_type: int = 3):
         self._cfg = cfg
+        self._market_data_type = market_data_type
         self._readonly = readonly
         self.ib = IB()
 
@@ -50,7 +50,7 @@ class Broker:
                 "手机上的登录确认是否已同意、用的是否是模拟盘自己的账号、"
                 "同一账户是否在 TWS 或网页上同时登录。"
             ) from e
-        self.ib.reqMarketDataType(DELAYED_FROZEN)
+        self.ib.reqMarketDataType(self._market_data_type)
         return self
 
     def __exit__(self, *exc) -> None:

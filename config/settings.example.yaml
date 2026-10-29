@@ -67,6 +67,7 @@ execution:
   benchmark: SPY                 # 只用来比较成绩，不买入
   trading_window_et: ["09:45", "15:45"]   # 美东时间，只在这个时段下单
   fill_timeout_seconds: 300      # 等成交的最长时间，超时未成交的撤单
+  market_data_type: 3            # 1 实时，3 延迟 15 分钟（免费，长线够用），4 延迟冻结
 
 graduation:                      # 模拟盘转实盘门槛：ibkr-agent graduate 检查
   min_consecutive_ok_runs: 12    # 连续成功运行（每周一次约 3 个月）

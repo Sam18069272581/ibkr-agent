@@ -48,7 +48,7 @@ def _cycle(s: Settings, journal: Journal, run_id: int, skip_research: bool) -> s
         s.research.model, s.research.effort, s.decision.claude_adjustment_cap
     )
 
-    with Broker(s.ibkr, readonly=s.dry_run) as broker:
+    with Broker(s.ibkr, readonly=s.dry_run, market_data_type=s.execution.market_data_type) as broker:
         account = broker.account_state(journal.high_water_mark())
         halted = account.net_liquidation < account.high_water_mark * (1 - s.risk.drawdown_halt)
         bench = broker.last_prices([s.execution.benchmark]).get(s.execution.benchmark)
@@ -65,6 +65,11 @@ def _cycle(s: Settings, journal: Journal, run_id: int, skip_research: bool) -> s
 
         tickers = sorted(set(s.universe) | set(holdings))
         prices = broker.last_prices(tickers)
+        if tickers and not prices:
+            raise RuntimeError(
+                "一个价格都没拿到。最常见的原因是真实账户正在别处登录（IBKR Error 10197），"
+                "模拟盘因此拿不到行情：请退出手机 App、TWS 和网页版的真实账户登录。"
+            )
 
         candidates: list[Candidate] = []
         for t in tickers:
