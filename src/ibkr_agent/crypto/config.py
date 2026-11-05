@@ -23,6 +23,7 @@ class CryptoRisk:
     cash_buffer: float = 0.02          # 始终留下的现金比例
     min_order_value: float = 10.0      # 单笔最少金额（计价货币）
     max_orders_per_run: int = 4
+    max_buy_fraction_per_run: float = 0.25  # 每次运行最多买净值的 25%：从零建仓或入金后分几周买进（用户 2026-11-05 选的）
     max_spread_bps: float = 30         # 盘口价差过大视为异常
     kill_switch_file: str = "data/KILL"
 
@@ -76,6 +77,7 @@ class CryptoSettings:
     quote: str = "EUR"
     targets: dict[str, float] = field(default_factory=lambda: {"BTC": 0.6, "ETH": 0.4})
     rebalance_band: float = 0.10       # 实际比例偏离目标超过 10 个百分点才调
+    cash_deploy_band: float = 0.05     # 现金比缓冲多出 5 个百分点以上时，低于目标的币都补到目标（不受上面的带限制）
     costs: CryptoCosts = field(default_factory=CryptoCosts)
     risk: CryptoRisk = field(default_factory=CryptoRisk)
     execution: CryptoExecution = field(default_factory=CryptoExecution)
@@ -105,6 +107,7 @@ def parse(raw: dict, journal_path: str = "data/journal.sqlite") -> CryptoSetting
         quote=str(raw.get("quote", "EUR")).upper(),
         targets=targets,
         rebalance_band=float(raw.get("rebalance_band", 0.10)),
+        cash_deploy_band=float(raw.get("cash_deploy_band", 0.05)),
         costs=CryptoCosts(**raw.get("costs", {})),
         risk=CryptoRisk(**raw.get("risk", {})),
         execution=CryptoExecution(**raw.get("execution", {})),
@@ -114,6 +117,10 @@ def parse(raw: dict, journal_path: str = "data/journal.sqlite") -> CryptoSetting
     )
     if not 0 < s.execution.price_band < 0.05:
         raise ValueError("crypto.execution.price_band 应在 0 到 5% 之间")
+    if not 0 < s.risk.max_buy_fraction_per_run <= 1:
+        raise ValueError("crypto.risk.max_buy_fraction_per_run 应在 0 到 1 之间")
+    if s.cash_deploy_band < 0:
+        raise ValueError("crypto.cash_deploy_band 不能是负数")
     if not 0 <= s.ai.max_tilt <= 0.2:
         raise ValueError("crypto.ai.max_tilt 应在 0 到 20% 之间")
     return s

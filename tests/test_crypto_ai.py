@@ -11,7 +11,7 @@ from ibkr_agent.crypto.config import CryptoAI
 from ibkr_agent.crypto.cycle import run_cycle
 from ibkr_agent.crypto.envelope import EnvelopeStore, Envelope, Invalidation, buy_block, clamp, tilted_targets, weekly
 from ibkr_agent.crypto.gate import GateAnswer, judge, parse
-from ibkr_agent.crypto.llm import Budget, Call, ask_json, cost_usd
+from ibkr_agent.crypto.llm import Budget, Call, ask_json, cost_usd, usd
 from ibkr_agent.journal import Journal
 
 
@@ -53,6 +53,10 @@ def test_cost_and_budget_cap():
     assert b.spent_this_month() == pytest.approx(cost_usd("claude-haiku-5-5", 1000, 200))
     assert ask_json(client, b, call(estimate=0.01)) is None      # 超上限就不调用
     assert len(client.calls) == 1
+
+
+def test_small_costs_are_not_shown_as_zero():
+    assert usd(0.0007) == "$0.0007" and usd(0.05) == "$0.05" and usd(0) == "$0.00"
 
 
 def test_bad_answers_become_none():
@@ -162,9 +166,12 @@ def test_gate_pass_buys_and_records(tmp_path):
     j = Journal(":memory:")
     ok = {"p_invalidated": 0.05, "p_abnormal": 0.05, "p_up_7d": 0.6, "note": ""}
     client = FakeClient(ok, ok)
-    run_cycle(s, ex, j, out=lambda _: None, clock=lambda: NOW, sleep=lambda _: None, ai_client=client)
+    lines = []
+    run_cycle(s, ex, j, out=lines.append, clock=lambda: NOW, sleep=lambda _: None, ai_client=client)
     assert [p[1] for p in ex.placed] == ["BUY", "BUY"]
     assert j.db.execute("SELECT COUNT(*) FROM crypto_gate WHERE verdict='pass'").fetchone()[0] == 2
+    assert j.db.execute("SELECT COUNT(*) FROM events WHERE kind='gate'").fetchone()[0] == 2
+    assert sum("快哨兵放行" in l for l in lines) == 2                # 放行也要在输出里看得到
     assert j.db.execute("SELECT COUNT(*) FROM crypto_prices").fetchone()[0] == 2
     assert all(c["model"] == "claude-haiku-5-5" for c in client.calls)
 

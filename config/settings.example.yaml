@@ -88,6 +88,7 @@ crypto:                          # 币圈部分：ibkr-agent crypto run
     BTC: 0.6
     ETH: 0.4
   rebalance_band: 0.10           # 偏离目标超过 10 个百分点才调
+  cash_deploy_band: 0.05         # 现金比缓冲多出 5 个百分点以上时（建仓、入金、卖出后），低于目标的币都补到目标
   costs:
     maker_fee: 0.0008            # OKX 普通用户现货（约值，以官网为准）
     taker_fee: 0.0010
@@ -99,6 +100,7 @@ crypto:                          # 币圈部分：ibkr-agent crypto run
     cash_buffer: 0.02
     min_order_value: 10          # 单笔最少 10 欧
     max_orders_per_run: 4
+    max_buy_fraction_per_run: 0.25  # 每次运行最多买净值的 25%：从零建仓大约分 4 周买进
     max_spread_bps: 30
     kill_switch_file: data/KILL  # 和美股共用同一个总开关
   execution:

@@ -17,7 +17,7 @@ from ..journal import FillRecord, Journal, PositionSnapshot
 from .config import CryptoSettings
 from .envelope import EnvelopeStore, buy_block, tilted_targets
 from .exchange import Exchange
-from .gate import Gate, dossier, record_prices
+from .gate import Gate, GateResult, dossier, record_prices
 from .guard import Rejected, Send, preflight, risk_check, shocked, tax_filter
 from .llm import Budget
 from .lots import LotBook
@@ -53,16 +53,16 @@ def _wait_fill(ex: Exchange, symbol: str, oid: str, timeout: int, sleep: Callabl
 
 
 def _buy_check(p: OrderPlan, s: CryptoSettings, ex: Exchange, books: dict, envelopes: dict, gate: Gate | None,
-               now: datetime) -> str | None:
-    """返回不买的原因；None 表示可以买。按便宜到贵的顺序检查，快哨兵放在最后。"""
+               now: datetime) -> tuple[str | None, GateResult | None]:
+    """返回（不买的原因，快哨兵的结果）。原因是 None 表示可以买。按便宜到贵的顺序检查，快哨兵放在最后。"""
     try:
         window = ex.recent_range(p.symbol, s.execution.shock_window_minutes)
     except Exception as e:
-        return f"拿不到近期行情，不买：{e}"
+        return f"拿不到近期行情，不买：{e}", None
     o, lo, hi = window
     if shocked(o, lo, hi, s.execution.shock_move):
         alerts.send("币圈波动过大", f"{p.symbol} 暂停买入，建议运行 crypto envelope 让 Opus 重新评估")
-        return f"{s.execution.shock_window_minutes} 分钟内波动 {(hi - lo) / o:.1%}，超过 {s.execution.shock_move:.0%}，暂停买入"
+        return f"{s.execution.shock_window_minutes} 分钟内波动 {(hi - lo) / o:.1%}，超过 {s.execution.shock_move:.0%}，暂停买入", None
     env = envelopes.get(p.ticker)
     closes = None
     if env is not None or gate is not None:
@@ -70,20 +70,19 @@ def _buy_check(p: OrderPlan, s: CryptoSettings, ex: Exchange, books: dict, envel
             closes = ex.daily_closes(p.symbol, 8)
         except Exception as e:
             if env is not None:
-                return f"拿不到日线，没法检查边界，不买：{e}"
+                return f"拿不到日线，没法检查边界，不买：{e}", None
     price = books[p.ticker].mid
     if env is not None:
         week_ago = closes[-8] if closes and len(closes) >= 8 else None
         if why := buy_block(env, price, week_ago):
             if why.startswith("失效条件"):
                 alerts.send("币圈边界失效", f"{p.ticker}：{why}。停止买入，请运行 crypto envelope 重新评估")
-            return why
+            return why, None
     if gate is not None:
         result = gate.ask(dossier(p.ticker, price, books[p.ticker].spread_bps, window,
                                   s.execution.shock_window_minutes, closes, env, p.notional, s.quote), now)
-        if result.verdict != "pass":
-            return result.why
-    return None
+        return (None if result.verdict == "pass" else result.why), result
+    return None, None
 
 
 def run_cycle(s: CryptoSettings, ex: Exchange, journal: Journal, out: Callable[[str], None] = print,
@@ -169,7 +168,12 @@ def _cycle(s, ex, journal, run_id, account, mode, out, clock, sleep, ai_client) 
     final: list[OrderPlan] = []
     for p in approved:
         if p.side == "BUY":  # 卖出不经过下面任何一道：波动、边界、快哨兵都只拦开仓
-            why = _buy_check(p, s, ex, books, envelopes, gate, now_dt)
+            why, verdict = _buy_check(p, s, ex, books, envelopes, gate, now_dt)
+            if verdict is not None:
+                journal.log(run_id, "gate", {"ticker": p.ticker, "verdict": verdict.verdict, "why": verdict.why,
+                                             **(asdict(verdict.answer) if verdict.answer else {})})
+                if verdict.verdict == "pass":
+                    out(f"  ◆ {p.ticker} {verdict.why}")
             if why:
                 rejected.append(Rejected(p.ticker, p.side, why))
                 continue

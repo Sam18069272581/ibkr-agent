@@ -56,7 +56,13 @@ def weights(prices: dict[str, float], holdings: dict[str, float], cash: float,
 
 def rebalance(prices: dict[str, float], holdings: dict[str, float], cash: float,
               s: CryptoSettings, now: float) -> tuple[list[OrderPlan], list[str]]:
-    """偏离目标超过再平衡带的资产调回目标。先卖后买；买入总额受可用现金限制，按比例缩小。"""
+    """偏离目标超过再平衡带的资产调回目标。先卖后买。
+
+    - 现金比缓冲多出 cash_deploy_band 以上时（从零建仓、入金、卖出之后），低于目标的币都补到目标，不看带。
+      否则分批建仓到最后一步时，差几个百分点的币会卡在带内，现金一直闲着。
+    - 买入总额受两个限制，取小的那个，按比例缩小：可用现金（扣缓冲和手续费），以及每次运行最多买净值的
+      max_buy_fraction_per_run（分批建仓）。
+    """
     nav, ws = weights(prices, holdings, cash, s.targets)
     notes: list[str] = []
     if nav <= 0:
@@ -64,22 +70,33 @@ def rebalance(prices: dict[str, float], holdings: dict[str, float], cash: float,
     expires = now + s.execution.plan_ttl_minutes * 60
     sells: list[OrderPlan] = []
     buys: list[OrderPlan] = []
+    cash_heavy = cash / nav - s.risk.cash_buffer > s.cash_deploy_band
     for w in ws:
-        if abs(w.deviation) < s.rebalance_band:
+        inside = abs(w.deviation) < s.rebalance_band
+        if inside and not (cash_heavy and w.deviation < 0):
             notes.append(f"{w.ticker} 占 {w.weight:.0%}，目标 {w.target:.0%}，偏离在 {s.rebalance_band:.0%} 带内，不动")
             continue
         amount = abs(w.deviation) * nav
         side = "SELL" if w.deviation > 0 else "BUY"
-        reason = f"占 {w.weight:.0%}，目标 {w.target:.0%}，偏离 {w.deviation:+.0%} 超过 {s.rebalance_band:.0%} 带"
+        if inside:
+            reason = f"占 {w.weight:.0%}，目标 {w.target:.0%}，现金占 {cash / nav:.0%} 偏多，补到目标"
+        else:
+            reason = f"占 {w.weight:.0%}，目标 {w.target:.0%}，偏离 {w.deviation:+.0%} 超过 {s.rebalance_band:.0%} 带"
         plan = OrderPlan(w.ticker, s.symbol(w.ticker), side, amount, prices[w.ticker],
                          s.execution.price_band, expires, reason)
         (sells if side == "SELL" else buys).append(plan)
 
-    spendable = (cash - s.risk.cash_buffer * nav) / (1 + s.costs.maker_fee)  # 手续费也要从现金里出
+    spendable = max(0.0, (cash - s.risk.cash_buffer * nav) / (1 + s.costs.maker_fee))  # 手续费也要从现金里出
+    per_run = s.risk.max_buy_fraction_per_run * nav
     want = sum(b.notional for b in buys)
-    if buys and want > spendable:
-        scale = max(0.0, spendable) / want
-        notes.append(f"买入需要 {want:.2f}，可用现金 {max(0.0, spendable):.2f}，按比例缩小（卖出所得下次运行再用）")
+    limit = min(spendable, per_run)
+    if buys and want > limit:
+        scale = limit / want
+        if per_run < spendable:
+            notes.append(f"分批建仓：这次最多买净值的 {s.risk.max_buy_fraction_per_run:.0%}（{per_run:.2f} {s.quote}），"
+                         f"一共需要 {want:.2f}，剩下的下次运行再买")
+        else:
+            notes.append(f"买入需要 {want:.2f}，可用现金 {spendable:.2f}，按比例缩小（卖出所得下次运行再用）")
         buys = [OrderPlan(b.ticker, b.symbol, b.side, b.notional * scale, b.ref_price, b.band,
                           b.expires_at, b.reason) for b in buys]
 

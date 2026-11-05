@@ -1,7 +1,7 @@
 """风控和下单前检查：纯函数。
 
 - tax_filter：卖出会产生短期税负时，只卖能免税的部分；超过单币硬上限时例外。
-- risk_check：kill switch、回撤熔断、单币上限、现金、单笔下限、订单数。
+- risk_check：kill switch、回撤熔断、单币上限、现金、单笔下限、订单数、单次买入总额上限。
 - shocked：最近一段时间波动过大时不买。
 - preflight：下单前一秒用新盘口再确认：计划没过期、报价新鲜、价差正常、价格还在价格带内。
   价格跑出带外就不追。卖出和买入一样检查价格带，但卖出不受回撤熔断和波动检查限制。
@@ -69,6 +69,7 @@ def risk_check(plans: list[OrderPlan], nav: float, high_water: float, cash: floa
     bad: list[Rejected] = []
     halted = high_water > 0 and nav < high_water * (1 - r.drawdown_halt)
     cash_left = cash - r.cash_buffer * nav
+    buy_left = r.max_buy_fraction_per_run * nav
     vals = dict(values)
     for p in plans:
         if len(ok) >= r.max_orders_per_run:
@@ -91,6 +92,10 @@ def risk_check(plans: list[OrderPlan], nav: float, high_water: float, cash: floa
         if (vals.get(p.ticker, 0.0) + p.notional) / nav > r.max_weight + 1e-9:
             bad.append(Rejected(p.ticker, p.side, f"买完会超过单币上限 {r.max_weight:.0%}"))
             continue
+        if p.notional > buy_left + 1e-6 * nav:
+            bad.append(Rejected(p.ticker, p.side, f"超过单次买入上限（净值的 {r.max_buy_fraction_per_run:.0%}）"))
+            continue
+        buy_left -= p.notional
         cash_left -= cost
         vals[p.ticker] = vals.get(p.ticker, 0.0) + p.notional
         ok.append(p)

@@ -36,7 +36,7 @@
 
 ## 币圈部分（2026-11-05 起）
 - 代码在 `src/ibkr_agent/crypto/`，命令 `ibkr-agent crypto run` / `crypto report`，配置在 `settings.yaml` 的 `crypto:` 段。
-- 用户的决定：交易所 OKX（币安在欧盟没有 MiCA 牌照）；币圈本金 €300；回撤熔断 35%；核心仓 BTC/ETH 再平衡。
+- 用户的决定：交易所 OKX（币安在欧盟没有 MiCA 牌照）；币圈本金 €300；回撤熔断 35%；核心仓 BTC/ETH 再平衡；从零建仓分 4 周买进（每次运行最多买净值的 25%，2026-11-05 选的）。
 - 计划带边界（金额上限、±0.5% 价格带、15 分钟过期），下单前重新取价，跑出带外不追。
 - 卖出遵守德国一年持有期（FIFO 批次，`crypto_lots` / `crypto_disposals` 表）。
 - 实盘需要 `sandbox: false`、`dry_run: false` 和 `.env` 里的 `CRYPTO_ALLOW_LIVE=yes` 三者同时满足。不经用户明确同意不要改。

@@ -38,6 +38,11 @@ PRICES = {
 UNKNOWN_PRICE = (10.0, 50.0, 12.5, 1.0)
 
 
+def usd(x: float) -> str:
+    """花费的显示：小于 1 美分时显示到四位小数，不然 Haiku 的调用全是 $0.00。"""
+    return f"${x:.4f}" if 0 < x < 0.01 else f"${x:.2f}"
+
+
 def cost_usd(model: str, input_tokens: int, output_tokens: int, cache_write: int = 0, cache_read: int = 0) -> float:
     i, o, w, r = PRICES.get(model, UNKNOWN_PRICE)
     return (input_tokens * i + output_tokens * o + cache_write * w + cache_read * r) / 1_000_000

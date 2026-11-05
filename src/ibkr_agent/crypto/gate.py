@@ -94,7 +94,7 @@ def judge(a: GateAnswer | None, s: CryptoSettings) -> GateResult:
         return GateResult("block", f"快哨兵认为失效概率 {a.p_invalidated:.0%}，超过 {s.ai.gate_max_p_invalidated:.0%}", a)
     if a.p_abnormal > s.ai.gate_max_p_abnormal:
         return GateResult("block", f"快哨兵认为行情异常概率 {a.p_abnormal:.0%}，超过 {s.ai.gate_max_p_abnormal:.0%}", a)
-    return GateResult("pass", f"快哨兵放行（失效 {a.p_invalidated:.0%}，异常 {a.p_abnormal:.0%}）", a)
+    return GateResult("pass", f"快哨兵放行（失效 {a.p_invalidated:.0%}，异常 {a.p_abnormal:.0%}，7 天上涨 {a.p_up_7d:.0%}）", a)
 
 
 def dossier(asset: str, price: float, spread_bps: float, window: tuple[float, float, float], window_minutes: int,

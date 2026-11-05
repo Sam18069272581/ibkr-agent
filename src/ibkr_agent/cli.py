@@ -176,7 +176,7 @@ def crypto(config_path: str, command: str) -> int:
         from datetime import datetime, timezone
 
         from .crypto import calibration
-        from .crypto.llm import Budget
+        from .crypto.llm import Budget, usd
 
         s = load_settings(config_path)
         print(render(build(journal.db, f"crypto-{account_name(cs)}", s.graduation), cs.quote))
@@ -184,8 +184,8 @@ def crypto(config_path: str, command: str) -> int:
         print()
         print(calibration.render(calibration.build(journal.db, account_name(cs), now)))
         budget = Budget(journal.db, cs.ai.monthly_budget_usd)
-        parts = "，".join(f"{k} {n} 次 ${c:.2f}" for k, (n, c) in sorted(budget.by_purpose(now).items())) or "没有调用"
-        print(f"本月 API 花费 ${budget.spent_this_month(now):.2f} / 上限 ${budget.cap:.2f}（{parts}）")
+        parts = "，".join(f"{k} {n} 次 {usd(c)}" for k, (n, c) in sorted(budget.by_purpose(now).items())) or "没有调用"
+        print(f"本月 API 花费 {usd(budget.spent_this_month(now))} / 上限 {usd(budget.cap)}（{parts}）")
         return 0
     if not cs.enabled:
         print("settings.yaml 里 crypto.enabled 是 false，没有运行。")

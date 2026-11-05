@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 
 from .config import CryptoSettings
-from .llm import Budget, Call, ask_json
+from .llm import Budget, Call, ask_json, usd
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS crypto_envelopes (
@@ -284,5 +284,5 @@ def weekly(s: CryptoSettings, ex, db: sqlite3.Connection, account: str, client, 
         out("  " + e.rationale.replace("\n", "\n  "))
     if summary:
         out("总结：" + summary)
-    out(f"本月 API 花费 ${budget.spent_this_month(now):.2f} / ${budget.cap:.2f}")
+    out(f"本月 API 花费 {usd(budget.spent_this_month(now))} / {usd(budget.cap)}")
     return envs

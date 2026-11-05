@@ -27,13 +27,50 @@ def plan(side="BUY", notional=100.0, ref=100.0, band=0.005, expires=NOW + 900, t
 # ---------- 再平衡 ----------
 
 def test_all_cash_buys_targets_within_cash_buffer(tmp_path):
-    s = settings(tmp_path)
+    s = settings(tmp_path, risk=CryptoRisk(max_buy_fraction_per_run=1.0, kill_switch_file=str(tmp_path / "KILL")))
     plans, _ = rebalance({"BTC": 60000.0, "ETH": 3000.0}, {}, 300.0, s, NOW)
     by = {p.ticker: p for p in plans}
     assert set(by) == {"BTC", "ETH"} and all(p.side == "BUY" for p in plans)
     assert sum(p.notional for p in plans) == pytest.approx((300 - 6) / 1.0008)  # 留 2% 现金和手续费
     assert by["BTC"].notional / by["ETH"].notional == pytest.approx(0.6 / 0.4)
     assert by["BTC"].expires_at == NOW + 15 * 60
+
+
+def test_staged_entry_caps_each_run(tmp_path):
+    s = settings(tmp_path)  # 默认每次运行最多买净值的 25%
+    plans, notes = rebalance({"BTC": 60000.0, "ETH": 3000.0}, {}, 300.0, s, NOW)
+    by = {p.ticker: p for p in plans}
+    assert sum(p.notional for p in plans) == pytest.approx(75.0)
+    assert by["BTC"].notional / by["ETH"].notional == pytest.approx(0.6 / 0.4)
+    assert any("分批建仓" in n for n in notes)
+
+
+def test_staged_entry_reaches_target_in_four_runs_without_stalling(tmp_path):
+    s = settings(tmp_path)
+    prices = {"BTC": 100.0, "ETH": 100.0}
+    held, cash = {}, 300.0
+    for _ in range(4):
+        plans, _ = rebalance(prices, held, cash, s, NOW)
+        assert plans and all(p.side == "BUY" for p in plans)
+        for p in plans:
+            held[p.ticker] = held.get(p.ticker, 0.0) + p.notional / prices[p.ticker]
+            cash -= p.notional * (1 + s.costs.maker_fee)
+    nav = cash + sum(q * prices[a] for a, q in held.items())
+    assert held["BTC"] * 100 / nav == pytest.approx(0.6, abs=0.015)
+    assert held["ETH"] * 100 / nav == pytest.approx(0.4, abs=0.015)
+    assert cash / nav == pytest.approx(0.02, abs=0.005)
+    assert rebalance(prices, held, cash, s, NOW)[0] == []          # 建满以后在带内就不动
+
+
+def test_excess_cash_tops_up_underweight_coin_inside_band(tmp_path):
+    s = settings(tmp_path)
+    # BTC 60%，ETH 31%，现金 9%：ETH 只差 9 个百分点，在带内；但现金比 2% 缓冲多 7 个百分点，要补
+    plans, _ = rebalance({"BTC": 100.0, "ETH": 100.0}, {"BTC": 1.8, "ETH": 0.93}, 27.0, s, NOW)
+    assert [(p.side, p.ticker) for p in plans] == [("BUY", "ETH")]
+    assert plans[0].notional == pytest.approx((27 - 6) / 1.0008)
+    assert "现金" in plans[0].reason
+    # 现金只比缓冲多 4 个百分点：不补
+    assert rebalance({"BTC": 100.0, "ETH": 100.0}, {"BTC": 1.8, "ETH": 1.02}, 18.0, s, NOW)[0] == []
 
 
 def test_inside_band_does_nothing(tmp_path):
@@ -133,6 +170,14 @@ def test_cash_and_weight_limits(tmp_path):
     assert ok == [] and "上限" in bad[0].why
     ok, bad = risk_check([plan("BUY", 150)], 300, 0, 100, {}, s)
     assert ok == [] and "现金不足" in bad[0].why
+
+
+def test_risk_check_caps_total_buys_per_run(tmp_path):
+    s = settings(tmp_path)
+    ok, bad = risk_check([plan("BUY", 50), plan("BUY", 50, ticker="ETH")], 300, 0, 300, {}, s)
+    assert [p.ticker for p in ok] == ["BTC"] and "单次买入上限" in bad[0].why
+    with pytest.raises(ValueError):
+        parse({"risk": {"max_buy_fraction_per_run": 0}})
 
 
 def test_shocked():
