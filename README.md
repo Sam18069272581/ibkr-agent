@@ -37,6 +37,7 @@
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest                                   # 跑单元测试
+ruff check src tests                     # lint，规则在 pyproject.toml
 
 cp .env.example .env                     # 填 ANTHROPIC_API_KEY、SEC_USER_AGENT、IB 账号（Paper）
 cp config/settings.example.yaml config/settings.yaml
@@ -81,6 +82,39 @@ ibkr-agent graduate    # 门槛全部通过时退出码为 0
 
 紧急停止：`touch data/KILL`，之后每次运行都不会下任何单。
 
+## 币圈部分（OKX 现货）
+
+`ibkr-agent crypto run` 跑一次币圈周期，规则全部在 `settings.yaml` 的 `crypto:` 段里。
+
+- **策略**：核心仓按目标比例持有（默认 BTC 60% / ETH 40%），偏离超过 10 个百分点才再平衡。不用合约、不用杠杆。
+- **分批建仓**：每次运行最多买净值的 25%，从零建仓大约分 4 周买进。现金比 2% 缓冲多出 5 个百分点以上时（建仓、入金、卖出后），低于目标的币都会补到目标，不会卡在再平衡带里。
+- **带边界的计划**：每笔计划写死金额上限、计划价、±0.5% 价格带和 15 分钟有效期。下单前一秒重新取盘口，价格跑出带外就不追；15 分钟内波动超过 3% 不买。
+- **只挂 maker 单**：post-only 限价单挂在买一/卖一，等不到成交就撤。
+- **德国一年持有期**：每笔买入按 FIFO 记批次。卖出会产生短期应税收益时，只卖免税的部分，其余等满一年；超过单币上限时例外。这是简化模型，不是税务建议。
+- **三种运行方式**（从安全到真钱）：
+  1. `paper_local: true`：不需要 key，用公开行情 + 本地模拟账户（`data/crypto_paper.json`，起始 €300）。
+  2. `sandbox: true`（默认）：OKX 模拟盘，需要在 OKX Demo Trading 里创建 API key。
+  3. `sandbox: false` + `dry_run: false`：实盘。还必须在 `.env` 里设 `CRYPTO_ALLOW_LIVE=yes`，否则拒绝运行。
+- **安装**：`pip install -e ".[crypto]"`。API key 写在 `.env`（`OKX_API_KEY` / `OKX_API_SECRET` / `OKX_API_PASSPHRASE`），只开“读取 + 交易”，不开提币。
+- **成绩**：`ibkr-agent crypto report`，和美股分开统计（运行模式记为 `crypto-okx-demo` 等）。
+
+### 慢思考和快哨兵（`crypto.ai`）
+
+模型不决定金额、不决定下单时机，也不能放宽风控。卖出完全不经过模型：卖不卖、卖多少只看配置目标、再平衡带和单币上限。
+
+- **Opus 每周定边界**：`ibkr-agent crypto envelope`，每周跑一次。给 Opus 的只有行情算出的事实（7/30/90 天涨跌、波动率、离 90 天高点多远、当前比例），看不到的东西明确列为 missing。Opus 给每个币：
+  - 立场：`add` / `hold` / `reduce_only`（本周不买）
+  - 买入目标倾斜：最多 ±5 个百分点（不能超过再平衡带的一半），只在立场 `add`、信心不是 low 时采用。它只改变“买到多少为止”，不会让系统卖出
+  - 本周买入价区间：最多离现价 ±25%，区间外不买
+  - 失效条件：只能是“价格跌破 X”或“7 天跌幅超过 Y”这两种代码能检查的条件。成立时停止买入并告警，请你重新跑 `crypto envelope`
+  - 边界 8 天后过期，过期或没有边界就按配置目标运行。
+  - 输出里会列出被忽略（不在目标里、重复）、被裁剪（倾斜、区间）或丢掉（无效的失效条件）的内容，以及哪些币这次按配置目标。
+- **快哨兵**（默认 Haiku 5.5）：每笔买入下单前回答三道固定题，每题给概率：失效条件是否成立、行情是否异常、7 天后是否上涨。前两题超过 30% 就不买；没回答也不买，不重问，输出里写明是没有客户端、超预算、超时还是回答格式不对。第三题只用来校准。
+- **先卖后买**：每笔买入轮到它下单时才做买入检查（波动、边界、快哨兵），用的是那一刻的行情。快哨兵最多等 30 秒、重试 1 次，再慢也不会让卖出计划过期。
+- **校准表**：`crypto report` 会显示快哨兵说 70% 的时候实际涨了多少，以及 Brier 分数。样本满 30 次以后再看才有意义。
+- **花费上限**：每次调用都按实际 token 记账（服务端换模型重答时，被拒的那次也算），价格在 `crypto.ai.prices`。调用前按最坏情况（输出写满 `max_tokens`）检查，会超过 `monthly_budget_usd`（默认 $8）就不调用。快哨兵每次约 $0.001，Opus 每周一次约 $0.1–0.4（估计，没实测）。
+- 默认都关着（`envelope_enabled` / `gate_enabled`），需要 `.env` 里的 `ANTHROPIC_API_KEY`。
+
 ## 小资金需要注意的几件事
 
 - **手续费**：IBKR Pro 固定费率每单最低约 $1。$300 的仓位来回一次约 0.9%，所以本系统只做长线、少调仓。费率是近似值，请以 IBKR 官网为准，并在 `costs` 里调整。
@@ -103,6 +137,8 @@ src/ibkr_agent/
   fundamentals.py  SEC EDGAR 年报数据
   valuation.py     报表基线预期收益
   research.py      Claude 研究员（结构化输出）
+  crypto/          币圈：exchange 交易所、plan 再平衡、guard 风控、lots 批次和税、
+                   envelope Opus 边界、gate 快哨兵、llm 调用和花费、calibration 校准表、cycle 一次运行
   costs.py         佣金、点差、滑点
   decision.py      打分、选股、目标仓位（纯函数）
   risk.py          风控与熔断（纯函数）

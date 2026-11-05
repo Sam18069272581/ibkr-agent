@@ -69,3 +69,10 @@ def test_underperformance_gate():
 
 def test_render_empty_journal():
     assert "继续跑模拟盘" in render(build(Journal(":memory:").db, "paper", G))
+
+
+def test_render_uses_account_currency():
+    j = Journal(":memory:")
+    r = build(j.db, "crypto-local-paper", G)
+    assert "欧元" in render(r, "EUR") and "€" in render(r, "EUR") and "美元" not in render(r, "EUR")
+    assert "美元" in render(r)

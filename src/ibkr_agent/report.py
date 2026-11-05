@@ -1,7 +1,7 @@
 """模拟盘成绩与转实盘门槛。只读 journal，不连 IBKR。
 
 只统计 dry_run = false 的运行，演练不算成绩。
-注意：净值按美元计，期间如果入金、出金或欧元兑美元汇率变化，收益会失真。
+注意：美股净值按美元计、币圈按计价货币（默认欧元）计；期间入金、出金或汇率变化会让收益失真。
 """
 
 from __future__ import annotations
@@ -170,14 +170,18 @@ def _pct(x: float | None) -> str:
     return "—" if x is None else f"{x:+.2%}"
 
 
-def render(r: Report) -> str:
+_UNITS = {"USD": ("美元", "$"), "EUR": ("欧元", "€")}
+
+
+def render(r: Report, currency: str = "USD") -> str:
+    word, sym = _UNITS.get(currency.upper(), (currency, currency + " "))
     lines = [
         f"模式：{r.mode}　运行 {r.runs} 次（出错 {r.errors}，对账不一致 {r.mismatches}）",
         f"区间：{r.first_ts or '—'} → {r.last_ts or '—'}",
-        f"净值：{r.nav_start or 0:,.0f} → {r.nav_end or 0:,.0f} 美元　收益 {_pct(r.total_return)}"
+        f"净值：{r.nav_start or 0:,.0f} → {r.nav_end or 0:,.0f} {word}　收益 {_pct(r.total_return)}"
         f"　基准 {_pct(r.benchmark_return)}　超额 {_pct(r.excess_return)}",
         f"最大回撤：{r.max_drawdown:.2%}",
-        f"成交 {r.fills} 笔，实际成本 ${r.actual_cost:.2f}，模型估计 ${r.modelled_cost:.2f}",
+        f"成交 {r.fills} 笔，实际成本 {sym}{r.actual_cost:.2f}，模型估计 {sym}{r.modelled_cost:.2f}",
         f"胜率（仅供参考）：已平仓 {r.realized_wins}/{r.realized_trades}，持仓浮盈 {r.open_winners}/{r.open_positions}",
         "",
         "转实盘门槛：",

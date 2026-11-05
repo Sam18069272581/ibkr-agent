@@ -3,6 +3,8 @@
 - ibkr-agent run：一个完整周期：取数 → 估值 → Claude 研究 → 决策 → 风控 → 下单并等成交 → 对账 → 快照
 - ibkr-agent report：模拟盘（或实盘）成绩
 - ibkr-agent graduate：检查转实盘门槛，全部通过时退出码为 0
+- ibkr-agent crypto run：币圈一次运行（OKX 现货再平衡，默认演练）
+- ibkr-agent crypto report：币圈成绩（和美股分开统计）
 
 长线策略建议每周运行一次 run，不需要常驻。
 """
@@ -12,6 +14,7 @@ from __future__ import annotations
 import argparse
 import logging
 from datetime import datetime, time, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import alerts
@@ -160,6 +163,68 @@ def report(config_path: str, graduate: bool) -> int:
     return 0 if (r.graduated or not graduate) else 2
 
 
+def crypto(config_path: str, command: str) -> int:
+    import os
+
+    from .crypto import config as ccfg
+    from .crypto.cycle import account_name, run_cycle
+    from .crypto.exchange import CcxtExchange, LocalPaperExchange
+
+    cs = ccfg.load(config_path)
+    journal = Journal(cs.journal_path)
+    if command == "report":
+        from datetime import datetime, timezone
+
+        from .crypto import calibration
+        from .crypto.llm import Budget, usd
+
+        s = load_settings(config_path)
+        print(render(build(journal.db, f"crypto-{account_name(cs)}", s.graduation), cs.quote))
+        now = datetime.now(timezone.utc)
+        print()
+        print(calibration.render(calibration.build(journal.db, account_name(cs), now)))
+        budget = Budget(journal.db, cs.ai.monthly_budget_usd)
+        parts = "，".join(f"{k} {n} 次 {usd(c)}" for k, (n, c) in sorted(budget.by_purpose(now).items())) or "没有调用"
+        print(f"本月 API 花费 {usd(budget.spent_this_month(now))} / 上限 {usd(budget.cap)}（{parts}）")
+        return 0
+    if not cs.enabled:
+        print("settings.yaml 里 crypto.enabled 是 false，没有运行。")
+        return 0
+    live = not cs.sandbox and not cs.paper_local and not cs.dry_run
+    if live and command == "run" and os.environ.get("CRYPTO_ALLOW_LIVE") != "yes":
+        print("这是实盘配置（sandbox: false，dry_run: false）。确认要用真钱交易时，在 .env 里设置 CRYPTO_ALLOW_LIVE=yes。")
+        return 2
+    try:
+        if cs.paper_local:
+            ex = LocalPaperExchange(str(Path(cs.journal_path).with_name("crypto_paper.json")),
+                                    cs.paper_start_cash, cs.quote, cs.costs.maker_fee,
+                                    exchange_name=cs.exchange, hostname=cs.hostname)
+        else:
+            ex = CcxtExchange(cs.exchange, sandbox=cs.sandbox, hostname=cs.hostname)
+        if command == "envelope":
+            from datetime import datetime, timezone
+
+            import anthropic
+
+            from .crypto.envelope import weekly
+
+            envs = weekly(cs, ex, journal.db, account_name(cs), anthropic.Anthropic(), datetime.now(timezone.utc))
+            return 0 if envs else 1
+        client = None
+        if cs.ai.gate_enabled:
+            import anthropic
+
+            try:
+                client = anthropic.Anthropic()
+            except Exception as e:  # 没有 key 也要能跑：快哨兵不回答 = 不买，卖出照常
+                log.warning("没法创建 Claude 客户端，本次不买入：%s", e)
+        status = run_cycle(cs, ex, journal, ai_client=client)
+    except Exception:
+        log.exception("币圈运行失败")
+        return 1
+    return 0 if status == "ok" else 3
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="ibkr-agent")
     p.add_argument("--config", default="config/settings.yaml")
@@ -169,10 +234,14 @@ def main() -> None:
     run_p.add_argument("--skip-research", action="store_true", help="不调用 Claude，只用报表基线")
     sub.add_parser("report", help="显示成绩")
     sub.add_parser("graduate", help="检查转实盘门槛，通过时退出码为 0")
+    crypto_p = sub.add_parser("crypto", help="币圈：run 运行一次，envelope 让 Opus 定本周边界，report 看成绩")
+    crypto_p.add_argument("crypto_command", choices=["run", "envelope", "report"], nargs="?", default="run")
     args = p.parse_args()
     load_dotenv()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(message)s")
 
+    if args.command == "crypto":
+        raise SystemExit(crypto(args.config, args.crypto_command))
     if args.command in ("report", "graduate"):
         raise SystemExit(report(args.config, graduate=args.command == "graduate"))
     raise SystemExit(run(args.config, getattr(args, "skip_research", False)))

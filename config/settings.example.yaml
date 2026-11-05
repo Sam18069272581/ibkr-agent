@@ -74,3 +74,65 @@ graduation:                      # 模拟盘转实盘门槛：ibkr-agent graduat
   max_cost_ratio: 1.5            # 实际手续费+滑点 / 模型估计
   max_underperformance: 0.05     # 收益落后基准不超过 5 个百分点
   allow_drawdown_halt: false     # 期间触发过回撤熔断就不通过
+
+crypto:                          # 币圈部分：ibkr-agent crypto run
+  enabled: false                 # 改成 true 才会运行
+  exchange: okx
+  hostname: ""                   # 留空即可；欧洲站账户连不上时，填 OKX 文档给的 API 域名
+  sandbox: true                  # true = OKX 模拟盘（Demo Trading，需要模拟盘的 API key）
+  dry_run: true                  # true = 只打印计划，不下单
+  paper_local: false             # true = 不连账户，用本地模拟账户 + 公开行情（不需要 key）
+  paper_start_cash: 300          # 本地模拟账户的起始现金
+  quote: EUR
+  targets:                       # 目标比例，剩下的是现金
+    BTC: 0.6
+    ETH: 0.4
+  rebalance_band: 0.10           # 偏离目标超过 10 个百分点才调
+  cash_deploy_band: 0.05         # 现金比缓冲多出 5 个百分点以上时（建仓、入金、卖出后），低于目标的币都补到目标
+  costs:
+    maker_fee: 0.0008            # OKX 普通用户现货（约值，以官网为准）
+    taker_fee: 0.0010
+    spread_bps: 2
+    slippage_bps: 3
+  risk:
+    max_weight: 0.70             # 单币上限
+    drawdown_halt: 0.35          # 从高点回撤 35% 停止买入
+    cash_buffer: 0.02
+    min_order_value: 10          # 单笔最少 10 欧
+    max_orders_per_run: 4
+    max_buy_fraction_per_run: 0.25  # 每次运行最多买净值的 25%：从零建仓大约分 4 周买进
+    max_spread_bps: 30
+    kill_switch_file: data/KILL  # 和美股共用同一个总开关
+  execution:
+    price_band: 0.005            # 下单前重取价，超出计划价 ±0.5% 就不追
+    plan_ttl_minutes: 15         # 计划 15 分钟后作废
+    max_quote_age_seconds: 2     # 报价超过 2 秒就算过期
+    fill_timeout_seconds: 300
+    shock_move: 0.03             # 15 分钟内波动超过 3% 不买
+    shock_window_minutes: 15
+  tax:                           # 德国 §23 EStG 简化模型，只用来决定“现在卖还是等满一年”
+    tax_free_after_days: 365
+    annual_threshold: 1000       # 年度短期收益 Freigrenze
+    est_tax_rate: 0.30
+  ai:                            # 慢思考 + 快哨兵。模型只给边界和概率，阈值和金额由代码定
+    envelope_enabled: false      # true = 运行时读取 Opus 的每周边界（先跑 crypto envelope）
+    envelope_model: claude-opus-5-5
+    envelope_effort: high
+    envelope_valid_days: 8       # 每周跑一次 crypto envelope，过期的边界不再使用
+    envelope_history_days: 100   # 给 Opus 的日线天数
+    envelope_max_tokens: 16000   # Opus 一次评审最多输出多少 token，也是调用前预算检查的上限
+    envelope_timeout_seconds: 600
+    envelope_max_retries: 2
+    max_tilt: 0.05               # Opus 最多把买入目标上下调 5 个百分点；不能超过 rebalance_band 的一半。只影响买入
+    max_band: 0.25               # 买入价区间最多离现价 ±25%
+    gate_enabled: false          # true = 每笔买入前问快哨兵；没回答就不买，卖出不受影响
+    gate_model: claude-haiku-5-5
+    gate_effort: low
+    gate_max_tokens: 4000
+    gate_timeout_seconds: 30     # 快哨兵在下单路径上，超时就当没回答，不买
+    gate_max_retries: 1
+    gate_max_p_invalidated: 0.30
+    gate_max_p_abnormal: 0.30
+    monthly_budget_usd: 8        # 本月 API 花费上限（美元），到了就不再调用
+    # prices:                    # 美元 / 百万 token：[输入, 输出, 写缓存, 读缓存]。默认价目在 crypto/config.py，
+    #   claude-haiku-5-5: [0.10, 0.50, 0.125, 0.01]   # 价格变了在这里覆盖对应模型即可

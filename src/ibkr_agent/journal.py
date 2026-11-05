@@ -87,8 +87,16 @@ class Journal:
         self.db = sqlite3.connect(path)
         self.db.executescript(SCHEMA)
 
-    def high_water_mark(self) -> float:
-        row = self.db.execute("SELECT MAX(high_water_mark_usd) FROM runs WHERE status != 'error' AND dry_run = 0").fetchone()
+    def high_water_mark(self, mode: str | None = None) -> float:
+        """非 dry run 的历史最高净值。mode 给定时只看这个模式（币圈的 crypto-* 运行以欧元计，不能和美股混在一起）。"""
+        if mode is None:
+            row = self.db.execute(
+                "SELECT MAX(high_water_mark_usd) FROM runs WHERE status != 'error' AND dry_run = 0 AND mode NOT LIKE 'crypto-%'"
+            ).fetchone()
+        else:
+            row = self.db.execute(
+                "SELECT MAX(high_water_mark_usd) FROM runs WHERE status != 'error' AND dry_run = 0 AND mode = ?", (mode,)
+            ).fetchone()
         return row[0] or 0.0
 
     def start_run(self, mode: str, dry_run: bool) -> int:
