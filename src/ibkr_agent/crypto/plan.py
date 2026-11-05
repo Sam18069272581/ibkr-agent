@@ -55,10 +55,12 @@ def weights(prices: dict[str, float], holdings: dict[str, float], cash: float,
 
 
 def rebalance(prices: dict[str, float], holdings: dict[str, float], cash: float,
-              s: CryptoSettings, now: float) -> tuple[list[OrderPlan], list[str]]:
+              s: CryptoSettings, now: float, buy_targets: dict[str, float] | None = None) -> tuple[list[OrderPlan], list[str]]:
     """偏离目标超过再平衡带的资产调回目标。先卖后买。
 
-    - 现金比缓冲多出 cash_deploy_band 以上时（从零建仓、入金、卖出之后），低于目标的币都补到目标，不看带。
+    - 卖出只看配置：超出配置目标一个再平衡带以上，或者超过单币上限，就卖回配置目标。模型影响不到卖出。
+    - 买入看 buy_targets（Opus 倾斜后的买入目标，没有时就是配置目标）：低于买入目标一个带以上才买，买到买入目标。
+    - 现金比缓冲多出 cash_deploy_band 以上时（从零建仓、入金、卖出之后），低于买入目标的币都补到买入目标，不看带。
       否则分批建仓到最后一步时，差几个百分点的币会卡在带内，现金一直闲着。
     - 买入总额受两个限制，取小的那个，按比例缩小：可用现金（扣缓冲和手续费），以及每次运行最多买净值的
       max_buy_fraction_per_run（分批建仓）。
@@ -67,21 +69,28 @@ def rebalance(prices: dict[str, float], holdings: dict[str, float], cash: float,
     notes: list[str] = []
     if nav <= 0:
         return [], ["净值为 0，没有可调配的资金"]
+    buy_targets = buy_targets or s.targets
     expires = now + s.execution.plan_ttl_minutes * 60
+    band = s.rebalance_band
     sells: list[OrderPlan] = []
     buys: list[OrderPlan] = []
     cash_heavy = cash / nav - s.risk.cash_buffer > s.cash_deploy_band
     for w in ws:
-        inside = abs(w.deviation) < s.rebalance_band
-        if inside and not (cash_heavy and w.deviation < 0):
-            notes.append(f"{w.ticker} 占 {w.weight:.0%}，目标 {w.target:.0%}，偏离在 {s.rebalance_band:.0%} 带内，不动")
-            continue
-        amount = abs(w.deviation) * nav
-        side = "SELL" if w.deviation > 0 else "BUY"
-        if inside:
-            reason = f"占 {w.weight:.0%}，目标 {w.target:.0%}，现金占 {cash / nav:.0%} 偏多，补到目标"
+        bt = buy_targets.get(w.ticker, w.target)
+        shown = f"目标 {w.target:.0%}" if bt == w.target else f"目标 {w.target:.0%}（买入目标 {bt:.0%}，含 Opus 倾斜）"
+        if w.deviation >= band or w.weight > s.risk.max_weight:
+            side, amount = "SELL", w.deviation * nav
+            reason = (f"占 {w.weight:.0%}，目标 {w.target:.0%}，偏离 {w.deviation:+.0%} 超过 {band:.0%} 带" if w.deviation >= band
+                      else f"占 {w.weight:.0%}，超过单币上限 {s.risk.max_weight:.0%}，卖回目标 {w.target:.0%}")
+        elif bt - w.weight >= band:
+            side, amount = "BUY", (bt - w.weight) * nav
+            reason = f"占 {w.weight:.0%}，{shown}，比买入目标低 {bt - w.weight:.0%}，超过 {band:.0%} 带"
+        elif cash_heavy and w.weight < bt:
+            side, amount = "BUY", (bt - w.weight) * nav
+            reason = f"占 {w.weight:.0%}，{shown}，现金占 {cash / nav:.0%} 偏多，补到买入目标"
         else:
-            reason = f"占 {w.weight:.0%}，目标 {w.target:.0%}，偏离 {w.deviation:+.0%} 超过 {s.rebalance_band:.0%} 带"
+            notes.append(f"{w.ticker} 占 {w.weight:.0%}，{shown}，偏离在 {band:.0%} 带内，不动")
+            continue
         plan = OrderPlan(w.ticker, s.symbol(w.ticker), side, amount, prices[w.ticker],
                          s.execution.price_band, expires, reason)
         (sells if side == "SELL" else buys).append(plan)

@@ -14,6 +14,23 @@
   - 落后 SPY 不超过 5 个百分点
   - 胜率和超额收益只报告，不作为门槛。
 
+## 质量规则
+用户 2026-11-05 定的，所有改动都要遵守：
+- 禁止用空 catch 或静默 fallback 掩盖错误；错误必须显示或记录日志
+- 禁止使用 mock/假数据/写死数值，除非我明确要求
+- 每个功能必须处理：加载中、空数据、错误三种状态
+- 改完代码必须运行 lint + 测试，全部通过才能说"完成"
+- 修 bug 时先写一个能复现该 bug 的失败测试，再修复
+- 修复必须说明根本原因，不接受只消除症状的补丁
+- 新增逻辑前先搜索是否已有类似函数，禁止重复实现
+- 完成后列出：你做的假设、没处理的边界情况
+
+怎么跑（需要先 `pip install -e ".[dev]"`）：
+- lint：`ruff check src tests`（规则在 `pyproject.toml` 的 `[tool.ruff.lint]`）
+- 测试：`python -m pytest -q`
+- Windows 上：`.venv\Scripts\ruff check src tests` 和 `.venv\Scripts\python -m pytest -q`
+- 单元测试里的假交易所、假 Claude 客户端是测试替身，不算“假数据”；运行代码里不能有。
+
 ## 设计要点
 - 流程：`src/ibkr_agent/cli.py` 的 `_cycle`：取数 → 估值 → Claude 研究 → 决策 → 风控 → 下单并等成交 → 对账 → 快照。
 - 财报来自 SEC EDGAR XBRL（需要 `SEC_USER_AGENT`）。
@@ -40,7 +57,9 @@
 - 计划带边界（金额上限、±0.5% 价格带、15 分钟过期），下单前重新取价，跑出带外不追。
 - 卖出遵守德国一年持有期（FIFO 批次，`crypto_lots` / `crypto_disposals` 表）。
 - 实盘需要 `sandbox: false`、`dry_run: false` 和 `.env` 里的 `CRYPTO_ALLOW_LIVE=yes` 三者同时满足。不经用户明确同意不要改。
-- 第二阶段（`crypto.ai`，默认关）：`crypto envelope` 让 Opus 每周定边界（立场、±10pp 倾斜、买入区间、两种可检查的失效条件）；快哨兵 Haiku 5.5 在每笔买入前答三道封闭题，没答就不买；卖出不经过模型；`crypto report` 有校准表和本月 API 花费；`monthly_budget_usd` 默认 $8。
+- 第二阶段（`crypto.ai`，默认关）：`crypto envelope` 让 Opus 每周定边界（立场、±5pp 买入目标倾斜、买入区间、两种可检查的失效条件）；快哨兵 Haiku 5.5 在每笔买入前答三道封闭题，没答就不买；`crypto report` 有校准表和本月 API 花费；`monthly_budget_usd` 默认 $8。
+- 卖出不经过模型：卖不卖、卖多少只看配置目标、再平衡带和单币上限。倾斜只改“买到多少为止”，而且只在立场 add 时采用；`max_tilt` 不能超过再平衡带的一半，否则买完就碰到卖出线。
+- 运行时先卖后买。每笔买入轮到它下单时才做买入检查（波动、边界、快哨兵），用那一刻的行情；快哨兵最多等 30 秒、重试 1 次，再慢也不会让卖出计划过期。
 - 2026-11-05 已在用户电脑上用 `paper_local` 跑通（项目是新 clone 的，`.venv` 新建；那台电脑上的 Claude Code 自动模式不允许 pip install，要用户自己装）。
 - 下一步：可视化页读真实日志。
 

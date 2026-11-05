@@ -1,5 +1,5 @@
-"""币圈一次运行：取数 → 对齐批次 → 读 Opus 边界、倾斜目标 → 再平衡计划 → 税务过滤 → 风控
-→ 买入才检查：波动、边界、快哨兵 → 下单前重取价 → 挂单等成交 → 记账。
+"""币圈一次运行：取数 → 对齐批次 → 读 Opus 边界、算买入目标 → 再平衡计划 → 税务过滤 → 风控
+→ 先卖后买；每笔买入轮到它时才检查：波动、边界、快哨兵 → 下单前重取价 → 挂单等成交 → 记账。
 
 所有事件写进同一个 journal.sqlite，运行模式记为 crypto-<账户>，和美股的成绩分开统计。
 """
@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Callable, Iterator
 
 from .. import alerts
 from ..journal import FillRecord, Journal, PositionSnapshot
@@ -21,6 +21,7 @@ from .gate import Gate, GateResult, dossier, record_prices
 from .guard import Rejected, Send, preflight, risk_check, shocked, tax_filter
 from .llm import Budget
 from .lots import LotBook
+from .market import WEEK_DAYS, candles_for, close_days_ago
 from .plan import OrderPlan, rebalance, weights
 
 log = logging.getLogger(__name__)
@@ -35,8 +36,8 @@ def account_name(s: CryptoSettings) -> str:
 def _avg_cost(lots: LotBook, asset: str) -> float:
     """批次加权平均成本（含手续费）。报告用它判断持仓是否浮盈；没有批次时为 0。"""
     ls = lots.lots(asset)
-    qty = sum(l.qty for l in ls)
-    return sum(l.qty * l.unit_cost for l in ls) / qty if qty > 0 else 0.0
+    qty = sum(lot.qty for lot in ls)
+    return sum(lot.qty * lot.unit_cost for lot in ls) / qty if qty > 0 else 0.0
 
 
 def _wait_fill(ex: Exchange, symbol: str, oid: str, timeout: int, sleep: Callable[[float], None],
@@ -52,12 +53,47 @@ def _wait_fill(ex: Exchange, symbol: str, oid: str, timeout: int, sleep: Callabl
     return st
 
 
+def _release(plans: list[OrderPlan], check_buy: Callable[[OrderPlan], str | None], journal: Journal, run_id: int,
+             out: Callable[[str], None]) -> Iterator[OrderPlan]:
+    """按“先卖后买”的顺序，把批准的计划一笔一笔交给下单。
+
+    每笔买入轮到它下单时才做买入检查（波动、Opus 边界、快哨兵），用的是那一刻的行情：快哨兵再慢也只耽误
+    它自己那笔买入，不会让前面的卖出计划过期；卖出挂单等成交的几分钟里行情变了，买入也按新行情检查。"""
+    for p in sorted(plans, key=lambda p: p.side != "SELL"):
+        if p.side == "BUY" and (why := check_buy(p)):
+            journal.log(run_id, "rejected", Rejected(p.ticker, p.side, why))
+            out(f"  ✗ {p.side} {p.ticker}：{why}")
+            continue
+        journal.log(run_id, "order", p)
+        yield p
+
+
+def _check_buy(p: OrderPlan, s: CryptoSettings, ex: Exchange, books: dict, envelopes: dict, gate: Gate | None,
+               now: datetime, journal: Journal, run_id: int, out: Callable[[str], None]) -> str | None:
+    """轮到这笔买入时做买入检查，返回不买的原因（None = 可以买）。有边界或快哨兵时先重新取盘口。
+    检查本身出错（取盘口失败、代码错误）也是不买，记日志并在输出里写明，不影响后面的卖出和对账。"""
+    try:
+        if p.ticker in envelopes or gate is not None:
+            books = {**books, p.ticker: ex.book(p.symbol)}
+        why, verdict = _buy_check(p, s, ex, books, envelopes, gate, now, out)
+    except Exception as e:
+        log.exception("%s 买入前检查出错，不买", p.ticker)
+        return f"买入前检查出错，不买：{e}"
+    if verdict is not None:
+        journal.log(run_id, "gate", {"ticker": p.ticker, "verdict": verdict.verdict, "why": verdict.why,
+                                     **(asdict(verdict.answer) if verdict.answer else {})})
+        if verdict.verdict == "pass":
+            out(f"  ◆ {p.ticker} {verdict.why}")
+    return why
+
+
 def _buy_check(p: OrderPlan, s: CryptoSettings, ex: Exchange, books: dict, envelopes: dict, gate: Gate | None,
-               now: datetime) -> tuple[str | None, GateResult | None]:
+               now: datetime, out: Callable[[str], None] = print) -> tuple[str | None, GateResult | None]:
     """返回（不买的原因，快哨兵的结果）。原因是 None 表示可以买。按便宜到贵的顺序检查，快哨兵放在最后。"""
     try:
         window = ex.recent_range(p.symbol, s.execution.shock_window_minutes)
     except Exception as e:
+        log.warning("%s 拿不到近期行情，不买：%s", p.symbol, e)
         return f"拿不到近期行情，不买：{e}", None
     o, lo, hi = window
     if shocked(o, lo, hi, s.execution.shock_move):
@@ -67,18 +103,20 @@ def _buy_check(p: OrderPlan, s: CryptoSettings, ex: Exchange, books: dict, envel
     closes = None
     if env is not None or gate is not None:
         try:
-            closes = ex.daily_closes(p.symbol, 8)
+            closes = ex.daily_closes(p.symbol, candles_for(WEEK_DAYS))
         except Exception as e:
             if env is not None:
                 return f"拿不到日线，没法检查边界，不买：{e}", None
     price = books[p.ticker].mid
     if env is not None:
-        week_ago = closes[-8] if closes and len(closes) >= 8 else None
+        week_ago = close_days_ago(closes, WEEK_DAYS)
         if why := buy_block(env, price, week_ago):
             if why.startswith("失效条件"):
                 alerts.send("币圈边界失效", f"{p.ticker}：{why}。停止买入，请运行 crypto envelope 重新评估")
             return why, None
     if gate is not None:
+        wait = s.ai.gate_timeout_seconds * (s.ai.gate_max_retries + 1)
+        out(f"  … 问快哨兵：{p.ticker}（最多等约 {wait:g} 秒）")
         result = gate.ask(dossier(p.ticker, price, books[p.ticker].spread_bps, window,
                                   s.execution.shock_window_minutes, closes, env, p.notional, s.quote), now)
         return (None if result.verdict == "pass" else result.why), result
@@ -132,14 +170,17 @@ def _cycle(s, ex, journal, run_id, account, mode, out, clock, sleep, ai_client) 
     record_prices(journal.db, account, prices, now_dt)
 
     envelopes = {}
+    buy_targets = None      # Opus 倾斜后的买入目标；卖出始终按配置目标
+    no_envelope = ""
     if s.ai.envelope_enabled:
         store = EnvelopeStore(journal.db, account)
         envelopes = {a: e for a in s.targets if (e := store.current(a, now_dt))}
-        missing = [a for a in s.targets if a not in envelopes]
-        if missing:
-            journal.log(run_id, "note", {"text": f"{', '.join(missing)} 没有有效的 Opus 边界，按配置目标"})
+        if missing := [a for a in s.targets if a not in envelopes]:
+            no_envelope = (f"{', '.join(missing)} 没有有效的 Opus 边界（还没运行过 crypto envelope，或者已过期），"
+                           "按配置目标")
+            journal.log(run_id, "note", {"text": no_envelope})
         if envelopes:
-            s = replace(s, targets=tilted_targets(s.targets, envelopes, s.risk.max_weight))
+            buy_targets = tilted_targets(s.targets, envelopes, s.risk.max_weight, s.ai.max_tilt)
 
     nav, ws = weights(prices, holdings, cash, s.targets)
     hwm = max(journal.high_water_mark(mode), nav)
@@ -150,12 +191,16 @@ def _cycle(s, ex, journal, run_id, account, mode, out, clock, sleep, ai_client) 
 
     out(f"[{account}] 净值 {nav:.2f} {s.quote}，现金 {cash:.2f}" + ("（演练，不下单）" if s.dry_run else ""))
     for w in ws:
-        out(f"  {w.ticker:5} {w.value:9.2f} {s.quote}  占 {w.weight:5.1%}  目标 {w.target:5.1%}")
+        bt = (buy_targets or {}).get(w.ticker, w.target)
+        out(f"  {w.ticker:5} {w.value:9.2f} {s.quote}  占 {w.weight:5.1%}  目标 {w.target:5.1%}"
+            + (f"（买入目标 {bt:.1%}）" if bt != w.target else ""))
     for a, e in envelopes.items():
-        out(f"  ◇ {a} 边界：{e.stance}，倾斜 {e.effective_tilt():+.0%}（信心 {e.confidence}），"
+        out(f"  ◇ {a} 边界：{e.stance}，买入目标倾斜 {e.effective_tilt():+.0%}（信心 {e.confidence}），"
             f"买入区间 {e.buy_low:.2f}–{e.buy_high:.2f}，失效条件 {len(e.invalidation)} 条，到 {e.valid_until[:10]}")
+    if no_envelope:
+        out("  · " + no_envelope)
 
-    plans, notes = rebalance(prices, holdings, cash, s, clock())
+    plans, notes = rebalance(prices, holdings, cash, s, clock(), buy_targets)
     for n in notes:
         journal.log(run_id, "note", {"text": n})
         out("  · " + n)
@@ -164,29 +209,17 @@ def _cycle(s, ex, journal, run_id, account, mode, out, clock, sleep, ai_client) 
     approved, rejected = risk_check(plans, nav, hwm, cash, {w.ticker: w.value for w in ws}, s)
     rejected = held_back + rejected
 
-    gate = Gate(ai_client, Budget(journal.db, s.ai.monthly_budget_usd), journal.db, account, s) if s.ai.gate_enabled else None
-    final: list[OrderPlan] = []
-    for p in approved:
-        if p.side == "BUY":  # 卖出不经过下面任何一道：波动、边界、快哨兵都只拦开仓
-            why, verdict = _buy_check(p, s, ex, books, envelopes, gate, now_dt)
-            if verdict is not None:
-                journal.log(run_id, "gate", {"ticker": p.ticker, "verdict": verdict.verdict, "why": verdict.why,
-                                             **(asdict(verdict.answer) if verdict.answer else {})})
-                if verdict.verdict == "pass":
-                    out(f"  ◆ {p.ticker} {verdict.why}")
-            if why:
-                rejected.append(Rejected(p.ticker, p.side, why))
-                continue
-        final.append(p)
-
     for r in rejected:
         journal.log(run_id, "rejected", r)
         out(f"  ✗ {r.side} {r.ticker}：{r.why}")
-    for p in final:
-        journal.log(run_id, "order", p)
-
-    if not final:
+    if not approved:
         out("本次不交易。")
+
+    gate = (Gate(ai_client, Budget(journal.db, s.ai.monthly_budget_usd, s.ai.prices), journal.db, account, s)
+            if s.ai.gate_enabled else None)
+    # 卖出不经过任何买入检查：波动、边界、快哨兵都只拦开仓
+    final = _release(approved, lambda p: _check_buy(p, s, ex, books, envelopes, gate, now_dt, journal, run_id, out),
+                     journal, run_id, out)
 
     for p in final:
         book = ex.book(p.symbol)  # 下单前一秒重新取价
