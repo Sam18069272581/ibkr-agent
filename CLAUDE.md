@@ -34,6 +34,14 @@
 - 所有记录写在 SQLite 日志 `data/journal.sqlite`（`journal.py`）。成绩和门槛只统计非 dry run 的运行。
 - 规则参数只在 `config/settings.yaml` 里改，模板是 `settings.example.yaml`。
 
+## 币圈部分（2026-11-05 起）
+- 代码在 `src/ibkr_agent/crypto/`，命令 `ibkr-agent crypto run` / `crypto report`，配置在 `settings.yaml` 的 `crypto:` 段。
+- 用户的决定：交易所 OKX（币安在欧盟没有 MiCA 牌照）；币圈本金 €300；回撤熔断 35%；核心仓 BTC/ETH 再平衡。
+- 计划带边界（金额上限、±0.5% 价格带、15 分钟过期），下单前重新取价，跑出带外不追。
+- 卖出遵守德国一年持有期（FIFO 批次，`crypto_lots` / `crypto_disposals` 表）。
+- 实盘需要 `sandbox: false`、`dry_run: false` 和 `.env` 里的 `CRYPTO_ALLOW_LIVE=yes` 三者同时满足。不经用户明确同意不要改。
+- 下一阶段：Opus 每周给每个币定边界和失效条件；快哨兵（Haiku 5.5）答固定封闭问题做开仓门；每周校准表；可视化页读真实日志；API 月度花费上限。
+
 ## 在用户的 Windows 电脑上运行
 - 项目目录：`C:\Users\COLORFUL\ibkr-agent`，虚拟环境 `.venv`。
 - 测试：`.venv\Scripts\python -m pytest -q`

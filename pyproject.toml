@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+crypto = ["ccxt>=4.4"]
 
 [project.scripts]
 ibkr-agent = "ibkr_agent.cli:main"

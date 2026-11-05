@@ -81,6 +81,23 @@ ibkr-agent graduate    # 门槛全部通过时退出码为 0
 
 紧急停止：`touch data/KILL`，之后每次运行都不会下任何单。
 
+## 币圈部分（OKX 现货）
+
+`ibkr-agent crypto run` 跑一次币圈周期，规则全部在 `settings.yaml` 的 `crypto:` 段里。
+
+- **策略**：核心仓按目标比例持有（默认 BTC 60% / ETH 40%），偏离超过 10 个百分点才再平衡。不用合约、不用杠杆。
+- **带边界的计划**：每笔计划写死金额上限、计划价、±0.5% 价格带和 15 分钟有效期。下单前一秒重新取盘口，价格跑出带外就不追；15 分钟内波动超过 3% 不买。
+- **只挂 maker 单**：post-only 限价单挂在买一/卖一，等不到成交就撤。
+- **德国一年持有期**：每笔买入按 FIFO 记批次。卖出会产生短期应税收益时，只卖免税的部分，其余等满一年；超过单币上限时例外。这是简化模型，不是税务建议。
+- **三种运行方式**（从安全到真钱）：
+  1. `paper_local: true`：不需要 key，用公开行情 + 本地模拟账户（`data/crypto_paper.json`，起始 €300）。
+  2. `sandbox: true`（默认）：OKX 模拟盘，需要在 OKX Demo Trading 里创建 API key。
+  3. `sandbox: false` + `dry_run: false`：实盘。还必须在 `.env` 里设 `CRYPTO_ALLOW_LIVE=yes`，否则拒绝运行。
+- **安装**：`pip install -e ".[crypto]"`。API key 写在 `.env`（`OKX_API_KEY` / `OKX_API_SECRET` / `OKX_API_PASSPHRASE`），只开“读取 + 交易”，不开提币。
+- **成绩**：`ibkr-agent crypto report`，和美股分开统计（运行模式记为 `crypto-okx-demo` 等）。
+
+研究员（Opus 每周定边界）和快哨兵（开仓前的封闭问题判断）在下一阶段接入；这一阶段只有代码规则。
+
 ## 小资金需要注意的几件事
 
 - **手续费**：IBKR Pro 固定费率每单最低约 $1。$300 的仓位来回一次约 0.9%，所以本系统只做长线、少调仓。费率是近似值，请以 IBKR 官网为准，并在 `costs` 里调整。
