@@ -42,7 +42,9 @@ class OrderStatus:
     status: str          # open | closed | canceled
     filled: float        # 已成交数量（币）
     average: float | None
-    fee: float           # 计价货币
+    fee: float           # 用计价货币（例如 EUR）付的手续费
+    fee_base: float = 0.0  # 用基础币（例如 BTC）付的手续费。OKX 现货买入时手续费从买到的币里扣
+    fee_other: tuple[tuple[str, float], ...] = ()  # 其他币种付的手续费（例如平台币抵扣），无法换算，交给调用方告警
 
 
 class Exchange(Protocol):
@@ -124,12 +126,31 @@ class CcxtExchange:
 
     def order(self, symbol: str, order_id: str) -> OrderStatus:
         o = self.ex.fetch_order(order_id, symbol)
-        fee = sum(float(f.get("cost") or 0) for f in (o.get("fees") or [])) or float((o.get("fee") or {}).get("cost") or 0)
         status = {"open": "open", "closed": "closed"}.get(o.get("status"), "canceled")
-        return OrderStatus(str(o["id"]), status, float(o.get("filled") or 0), o.get("average"), abs(fee))
+        fee, fee_base, other = split_fees(o, symbol)
+        return OrderStatus(str(o["id"]), status, float(o.get("filled") or 0), o.get("average"), fee, fee_base, other)
 
     def cancel(self, symbol: str, order_id: str) -> None:
         self.ex.cancel_order(order_id, symbol)
+
+
+def split_fees(order: dict, symbol: str) -> tuple[float, float, tuple[tuple[str, float], ...]]:
+    """把 ccxt 订单里的手续费按币种分开：（计价货币, 基础币, 其他币种）。
+
+    交易所按“收到的币”收手续费：OKX 现货买 BTC/EUR 时扣 BTC，卖出时扣 EUR。
+    以前把所有手续费都当成计价货币，买入后批次比交易所余额多出手续费那一点，每次都对账不一致。
+    """
+    base, quote = symbol.split("/")
+    fees = order.get("fees") or ([order["fee"]] if order.get("fee") else [])
+    by_ccy: dict[str, float] = {}
+    for f in fees:
+        cost = abs(float(f.get("cost") or 0))
+        if cost:
+            ccy = str(f.get("currency") or "未知币种").upper()  # 不猜币种：放进“其他”，由调用方告警
+            by_ccy[ccy] = by_ccy.get(ccy, 0.0) + cost
+    q = by_ccy.pop(quote.upper(), 0.0)
+    b = by_ccy.pop(base.upper(), 0.0)
+    return q, b, tuple(sorted(by_ccy.items()))
 
 
 class LocalPaperExchange:

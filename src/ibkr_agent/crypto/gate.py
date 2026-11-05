@@ -118,7 +118,7 @@ def dossier(asset: str, price: float, spread_bps: float, window: tuple[float, fl
             "invalidation": [{"kind": c.kind, "value": c.value, "why": c.why} for c in env.invalidation],
             "valid_until": env.valid_until,
         },
-        "missing": ["新闻", "链上数据", "资金费率和持仓量", "其他交易所的价格"],
+        "missing": (["日线"] if not closes else []) + ["新闻", "链上数据", "资金费率和持仓量", "其他交易所的价格"],
     }
 
 

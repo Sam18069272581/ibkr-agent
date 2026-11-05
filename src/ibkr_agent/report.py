@@ -42,6 +42,7 @@ class Report:
     open_winners: int
     open_positions: int
     gates: tuple[Gate, ...]
+    dry_runs: int = 0    # 演练次数，不计入成绩，只用来解释“为什么是空的”
 
     @property
     def cost_ratio(self) -> float | None:
@@ -74,6 +75,7 @@ def build(db: sqlite3.Connection, mode: str, g: GraduationConfig) -> Report:
         (mode,),
     ).fetchall()
     run_ids = [r[0] for r in runs]
+    dry_runs = db.execute("SELECT COUNT(*) FROM runs WHERE mode=? AND dry_run=1", (mode,)).fetchone()[0]
     ok = [r for r in runs if r[2] == "ok"]
 
     consecutive = 0
@@ -163,6 +165,7 @@ def build(db: sqlite3.Connection, mode: str, g: GraduationConfig) -> Report:
         open_winners=open_winners,
         open_positions=len(snap),
         gates=gates,
+        dry_runs=dry_runs,
     )
 
 
@@ -173,12 +176,20 @@ def _pct(x: float | None) -> str:
 _UNITS = {"USD": ("美元", "$"), "EUR": ("欧元", "€")}
 
 
+def _money(x: float | None) -> str:
+    return "—" if x is None else f"{x:,.0f}"
+
+
 def render(r: Report, currency: str = "USD") -> str:
     word, sym = _UNITS.get(currency.upper(), (currency, currency + " "))
-    lines = [
-        f"模式：{r.mode}　运行 {r.runs} 次（出错 {r.errors}，对账不一致 {r.mismatches}）",
+    lines = [f"模式：{r.mode}　运行 {r.runs} 次（出错 {r.errors}，对账不一致 {r.mismatches}；演练 {r.dry_runs} 次不计入）"]
+    if r.runs == 0:
+        why = (f"演练 {r.dry_runs} 次都不算成绩。要开始计成绩，确认后把 settings.yaml 里对应的 dry_run 改成 false（美股在最上面，币圈在 crypto: 段里）"
+               if r.dry_runs else "日志里还没有这个模式的运行记录，先跑一次 run")
+        lines.append(f"还没有计入成绩的运行（{why}）。")
+    lines += [
         f"区间：{r.first_ts or '—'} → {r.last_ts or '—'}",
-        f"净值：{r.nav_start or 0:,.0f} → {r.nav_end or 0:,.0f} {word}　收益 {_pct(r.total_return)}"
+        f"净值：{_money(r.nav_start)} → {_money(r.nav_end)} {word}　收益 {_pct(r.total_return)}"
         f"　基准 {_pct(r.benchmark_return)}　超额 {_pct(r.excess_return)}",
         f"最大回撤：{r.max_drawdown:.2%}",
         f"成交 {r.fills} 笔，实际成本 {sym}{r.actual_cost:.2f}，模型估计 {sym}{r.modelled_cost:.2f}",
