@@ -62,6 +62,13 @@ def test_bad_answers_become_none():
     assert b.by_purpose()["gate"][0] == 2                          # 失败的调用也照样记账
 
 
+def test_unexpected_client_error_is_no_answer():
+    class Broken:
+        beta = SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: (_ for _ in ()).throw(TypeError("bad kwarg"))))
+
+    assert ask_json(Broken(), Budget(Journal(":memory:").db, 10), call()) is None
+
+
 def test_fallbacks_only_for_models_that_support_them():
     b = Budget(Journal(":memory:").db, 10)
     haiku, opus = FakeClient({}), FakeClient({})
@@ -135,6 +142,18 @@ def test_gate_without_client_blocks_buys_but_not_sells(tmp_path):
     run_cycle(s, ex, j, out=lines.append, clock=lambda: NOW, sleep=lambda _: None)
     assert [p[1] for p in ex.placed] == ["SELL"]
     assert any("快哨兵没有给出答案" in l for l in lines)
+
+
+def test_broken_gate_still_lets_sells_through(tmp_path):
+    class Broken:
+        beta = SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: (_ for _ in ()).throw(RuntimeError("boom"))))
+
+    s = live(tmp_path, gate_enabled=True)
+    ex = FakeExchange({"EUR": 100.0, "BTC": 0.0055, "ETH": 0.01}, BOOKS)
+    j = Journal(":memory:")
+    assert run_cycle(s, ex, j, out=lambda _: None, clock=lambda: NOW, sleep=lambda _: None, ai_client=Broken()) == "ok"
+    assert [p[1] for p in ex.placed] == ["SELL"]
+    assert j.db.execute("SELECT verdict FROM crypto_gate").fetchall() == [("no_answer",)]
 
 
 def test_gate_pass_buys_and_records(tmp_path):

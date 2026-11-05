@@ -106,6 +106,9 @@ def ask_json(client, budget: Budget, call: Call) -> dict | None:
     except anthropic.APIError as e:
         log.warning("%s 调用失败：%s", call.purpose, e)
         return None
+    except Exception:  # 例如 SDK 版本太旧不认识某个参数。模型出错只能让它“不回答”，不能让整次运行崩掉、连卖出都做不了
+        log.exception("%s 调用出现意外错误，视为没有答案", call.purpose)
+        return None
     budget.record(call.purpose, getattr(response, "model", None) or call.model, response.usage)
     if response.stop_reason != "end_turn":
         log.warning("%s 未正常结束（%s），视为没有答案", call.purpose, response.stop_reason)
