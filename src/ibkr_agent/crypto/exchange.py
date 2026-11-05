@@ -49,11 +49,17 @@ class Exchange(Protocol):
     def balances(self) -> dict[str, float]: ...
     def book(self, symbol: str) -> Book: ...
     def recent_range(self, symbol: str, minutes: int) -> tuple[float, float, float]: ...
+    def daily_closes(self, symbol: str, days: int) -> list[float]: ...
     def amount_to_precision(self, symbol: str, amount: float) -> float: ...
     def min_amount(self, symbol: str) -> float: ...
     def place_post_only(self, symbol: str, side: str, amount: float, price: float) -> str: ...
     def order(self, symbol: str, order_id: str) -> OrderStatus: ...
     def cancel(self, symbol: str, order_id: str) -> None: ...
+
+
+def public_exchange(name: str = "okx", hostname: str = "") -> "CcxtExchange":
+    """只读公开行情（不需要 key、不连模拟盘），给 Opus 准备数据用。"""
+    return CcxtExchange(client=_ccxt(name, sandbox=False, with_keys=False, hostname=hostname))
 
 
 def _ccxt(name: str, sandbox: bool, with_keys: bool, hostname: str = ""):
@@ -100,6 +106,11 @@ class CcxtExchange:
             raise RuntimeError(f"{symbol} 没有 K 线")
         return float(candles[0][1]), min(float(c[3]) for c in candles), max(float(c[2]) for c in candles)
 
+    def daily_closes(self, symbol: str, days: int) -> list[float]:
+        """最近 days 根日线的收盘价，从旧到新。最后一根是今天还没收完的。"""
+        candles = self.ex.fetch_ohlcv(symbol, timeframe="1d", limit=days)
+        return [float(c[4]) for c in candles]
+
     def amount_to_precision(self, symbol: str, amount: float) -> float:
         return float(self.ex.amount_to_precision(symbol, amount))
 
@@ -133,7 +144,7 @@ class LocalPaperExchange:
         self.path = Path(state_path)
         self.quote = quote
         self.maker_fee = maker_fee
-        self.public = public or CcxtExchange(client=_ccxt(exchange_name, sandbox=False, with_keys=False, hostname=hostname))
+        self.public = public or public_exchange(exchange_name, hostname)
         if self.path.exists():
             self.state = json.loads(self.path.read_text(encoding="utf-8"))
         else:
@@ -151,6 +162,9 @@ class LocalPaperExchange:
 
     def recent_range(self, symbol: str, minutes: int) -> tuple[float, float, float]:
         return self.public.recent_range(symbol, minutes)
+
+    def daily_closes(self, symbol: str, days: int) -> list[float]:
+        return self.public.daily_closes(symbol, days)
 
     def amount_to_precision(self, symbol: str, amount: float) -> float:
         return self.public.amount_to_precision(symbol, amount)

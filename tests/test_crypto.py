@@ -184,6 +184,9 @@ class FakeExchange:
         b = self.books[symbol][0]
         return b, b * 0.995, b * 1.005
 
+    def daily_closes(self, symbol, days):
+        return [self.books[symbol][0]] * days
+
     def amount_to_precision(self, symbol, amount):
         return round(amount, 8)
 

@@ -47,6 +47,24 @@ class CryptoTax:
 
 
 @dataclass(frozen=True)
+class CryptoAI:
+    """慢思考（Opus 每周定边界）和快哨兵（Haiku 开仓前答封闭问题）。代码定阈值，模型只给概率和边界。"""
+
+    envelope_enabled: bool = False
+    envelope_model: str = "claude-opus-5-5"
+    envelope_effort: str = "high"
+    envelope_valid_days: int = 8           # 每周跑一次，多给一天余量；过期就当没有边界
+    max_tilt: float = 0.10                 # Opus 最多把目标比例上下调 10 个百分点
+    max_band: float = 0.25                 # 买入价区间最多离现价 ±25%
+    gate_enabled: bool = False
+    gate_model: str = "claude-haiku-5-5"
+    gate_effort: str = "low"
+    gate_max_p_invalidated: float = 0.30   # “失效条件已触发”的概率高于这个就不买
+    gate_max_p_abnormal: float = 0.30      # “行情异常”的概率高于这个就不买
+    monthly_budget_usd: float = 8.0        # 本月 API 花费到上限后不再调用（快哨兵不答 = 不买）
+
+
+@dataclass(frozen=True)
 class CryptoSettings:
     enabled: bool = False
     exchange: str = "okx"
@@ -62,6 +80,7 @@ class CryptoSettings:
     risk: CryptoRisk = field(default_factory=CryptoRisk)
     execution: CryptoExecution = field(default_factory=CryptoExecution)
     tax: CryptoTax = field(default_factory=CryptoTax)
+    ai: CryptoAI = field(default_factory=CryptoAI)
     journal_path: str = "data/journal.sqlite"
 
     def symbol(self, asset: str) -> str:
@@ -90,10 +109,13 @@ def parse(raw: dict, journal_path: str = "data/journal.sqlite") -> CryptoSetting
         risk=CryptoRisk(**raw.get("risk", {})),
         execution=CryptoExecution(**raw.get("execution", {})),
         tax=CryptoTax(**raw.get("tax", {})),
+        ai=CryptoAI(**raw.get("ai", {})),
         journal_path=journal_path,
     )
     if not 0 < s.execution.price_band < 0.05:
         raise ValueError("crypto.execution.price_band 应在 0 到 5% 之间")
+    if not 0 <= s.ai.max_tilt <= 0.2:
+        raise ValueError("crypto.ai.max_tilt 应在 0 到 20% 之间")
     return s
 
 

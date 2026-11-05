@@ -112,3 +112,16 @@ crypto:                          # 币圈部分：ibkr-agent crypto run
     tax_free_after_days: 365
     annual_threshold: 1000       # 年度短期收益 Freigrenze
     est_tax_rate: 0.30
+  ai:                            # 慢思考 + 快哨兵。模型只给边界和概率，阈值和金额由代码定
+    envelope_enabled: false      # true = 运行时读取 Opus 的每周边界（先跑 crypto envelope）
+    envelope_model: claude-opus-5-5
+    envelope_effort: high
+    envelope_valid_days: 8       # 每周跑一次 crypto envelope，过期的边界不再使用
+    max_tilt: 0.10               # Opus 最多把目标比例上下调 10 个百分点
+    max_band: 0.25               # 买入价区间最多离现价 ±25%
+    gate_enabled: false          # true = 每笔买入前问快哨兵；没回答就不买，卖出不受影响
+    gate_model: claude-haiku-5-5
+    gate_effort: low
+    gate_max_p_invalidated: 0.30
+    gate_max_p_abnormal: 0.30
+    monthly_budget_usd: 8        # 本月 API 花费上限（美元），到了就不再调用

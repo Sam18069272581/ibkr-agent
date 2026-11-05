@@ -173,14 +173,25 @@ def crypto(config_path: str, command: str) -> int:
     cs = ccfg.load(config_path)
     journal = Journal(cs.journal_path)
     if command == "report":
+        from datetime import datetime, timezone
+
+        from .crypto import calibration
+        from .crypto.llm import Budget
+
         s = load_settings(config_path)
         print(render(build(journal.db, f"crypto-{account_name(cs)}", s.graduation), cs.quote))
+        now = datetime.now(timezone.utc)
+        print()
+        print(calibration.render(calibration.build(journal.db, account_name(cs), now)))
+        budget = Budget(journal.db, cs.ai.monthly_budget_usd)
+        parts = "，".join(f"{k} {n} 次 ${c:.2f}" for k, (n, c) in sorted(budget.by_purpose(now).items())) or "没有调用"
+        print(f"本月 API 花费 ${budget.spent_this_month(now):.2f} / 上限 ${budget.cap:.2f}（{parts}）")
         return 0
     if not cs.enabled:
         print("settings.yaml 里 crypto.enabled 是 false，没有运行。")
         return 0
     live = not cs.sandbox and not cs.paper_local and not cs.dry_run
-    if live and os.environ.get("CRYPTO_ALLOW_LIVE") != "yes":
+    if live and command == "run" and os.environ.get("CRYPTO_ALLOW_LIVE") != "yes":
         print("这是实盘配置（sandbox: false，dry_run: false）。确认要用真钱交易时，在 .env 里设置 CRYPTO_ALLOW_LIVE=yes。")
         return 2
     try:
@@ -190,7 +201,24 @@ def crypto(config_path: str, command: str) -> int:
                                     exchange_name=cs.exchange, hostname=cs.hostname)
         else:
             ex = CcxtExchange(cs.exchange, sandbox=cs.sandbox, hostname=cs.hostname)
-        status = run_cycle(cs, ex, journal)
+        if command == "envelope":
+            from datetime import datetime, timezone
+
+            import anthropic
+
+            from .crypto.envelope import weekly
+
+            envs = weekly(cs, ex, journal.db, account_name(cs), anthropic.Anthropic(), datetime.now(timezone.utc))
+            return 0 if envs else 1
+        client = None
+        if cs.ai.gate_enabled:
+            import anthropic
+
+            try:
+                client = anthropic.Anthropic()
+            except Exception as e:  # 没有 key 也要能跑：快哨兵不回答 = 不买，卖出照常
+                log.warning("没法创建 Claude 客户端，本次不买入：%s", e)
+        status = run_cycle(cs, ex, journal, ai_client=client)
     except Exception:
         log.exception("币圈运行失败")
         return 1
@@ -206,8 +234,8 @@ def main() -> None:
     run_p.add_argument("--skip-research", action="store_true", help="不调用 Claude，只用报表基线")
     sub.add_parser("report", help="显示成绩")
     sub.add_parser("graduate", help="检查转实盘门槛，通过时退出码为 0")
-    crypto_p = sub.add_parser("crypto", help="币圈：run 运行一次，report 看成绩")
-    crypto_p.add_argument("crypto_command", choices=["run", "report"], nargs="?", default="run")
+    crypto_p = sub.add_parser("crypto", help="币圈：run 运行一次，envelope 让 Opus 定本周边界，report 看成绩")
+    crypto_p.add_argument("crypto_command", choices=["run", "envelope", "report"], nargs="?", default="run")
     args = p.parse_args()
     load_dotenv()
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(message)s")

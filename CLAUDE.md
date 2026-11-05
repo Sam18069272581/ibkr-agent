@@ -40,7 +40,9 @@
 - 计划带边界（金额上限、±0.5% 价格带、15 分钟过期），下单前重新取价，跑出带外不追。
 - 卖出遵守德国一年持有期（FIFO 批次，`crypto_lots` / `crypto_disposals` 表）。
 - 实盘需要 `sandbox: false`、`dry_run: false` 和 `.env` 里的 `CRYPTO_ALLOW_LIVE=yes` 三者同时满足。不经用户明确同意不要改。
-- 下一阶段：Opus 每周给每个币定边界和失效条件；快哨兵（Haiku 5.5）答固定封闭问题做开仓门；每周校准表；可视化页读真实日志；API 月度花费上限。
+- 第二阶段（`crypto.ai`，默认关）：`crypto envelope` 让 Opus 每周定边界（立场、±10pp 倾斜、买入区间、两种可检查的失效条件）；快哨兵 Haiku 5.5 在每笔买入前答三道封闭题，没答就不买；卖出不经过模型；`crypto report` 有校准表和本月 API 花费；`monthly_budget_usd` 默认 $8。
+- 2026-11-05 已在用户电脑上用 `paper_local` 跑通（项目是新 clone 的，`.venv` 新建；那台电脑上的 Claude Code 自动模式不允许 pip install，要用户自己装）。
+- 下一步：可视化页读真实日志。
 
 ## 在用户的 Windows 电脑上运行
 - 项目目录：`C:\Users\COLORFUL\ibkr-agent`，虚拟环境 `.venv`。
