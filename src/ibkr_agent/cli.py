@@ -174,7 +174,7 @@ def crypto(config_path: str, command: str) -> int:
     journal = Journal(cs.journal_path)
     if command == "report":
         s = load_settings(config_path)
-        print(render(build(journal.db, f"crypto-{account_name(cs)}", s.graduation)))
+        print(render(build(journal.db, f"crypto-{account_name(cs)}", s.graduation), cs.quote))
         return 0
     if not cs.enabled:
         print("settings.yaml 里 crypto.enabled 是 false，没有运行。")
