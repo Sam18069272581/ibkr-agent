@@ -183,3 +183,72 @@ def test_crypto_startup_failure_sends_alert(tmp_path, monkeypatch):
     monkeypatch.setattr("ibkr_agent.crypto.exchange.CcxtExchange", boom)
     assert cli.crypto(str(cfg), "run") == 1
     assert sent and "OKX_API_KEY" in sent[0][1]
+
+
+# ---------- 美股：财报全部拿不到 ----------
+
+class FakeBroker:
+    def __init__(self, *a, **kw):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return None
+
+    def account_state(self, hwm):
+        from ibkr_agent.risk import AccountState
+        return AccountState(3468.0, 3468.0, 3468.0, {})
+
+    def last_prices(self, tickers):
+        return {t: 100.0 for t in tickers}
+
+    def holdings(self):
+        return {}
+
+    def quotes(self, tickers):
+        return {}
+
+    def snapshot(self):
+        return []
+
+
+class BrokenEdgar:
+    def fundamentals(self, ticker):
+        raise RuntimeError("sec.gov 403 Forbidden")
+
+
+def test_all_fundamentals_failing_is_an_error_not_ok(monkeypatch):
+    """以前每只股票都只记一行日志，整次运行仍算成功（ok），只是一直“本次不交易”，没人会发现。"""
+    from ibkr_agent.config import Settings
+
+    monkeypatch.setattr(cli, "Broker", FakeBroker)
+    monkeypatch.setattr(cli, "EdgarClient", BrokenEdgar)
+    j = Journal(":memory:")
+    rid = j.start_run("paper", True)
+    with pytest.raises(RuntimeError, match="报表"):
+        cli._cycle(Settings(universe=("KO", "PG")), j, rid, skip_research=True)
+    assert len(events(j, "warning")) == 2 and "403" in events(j, "warning")[0]
+
+
+class HalfEdgar:
+    def fundamentals(self, ticker):
+        if ticker == "KO":
+            raise RuntimeError("KO 没有 FCF 数据")
+        from ibkr_agent.fundamentals import Fundamentals
+        return Fundamentals(ticker, None, 1e9, 0.03, 1e8, 1e8, 0.5, 1e7)
+
+
+def test_single_fundamentals_failure_is_recorded_in_journal(monkeypatch):
+    from ibkr_agent.config import Settings
+
+    monkeypatch.setattr(cli, "Broker", FakeBroker)
+    monkeypatch.setattr(cli, "EdgarClient", HalfEdgar)
+    from ibkr_agent.valuation import Valuation
+    monkeypatch.setattr(cli, "value", lambda f, cap: Valuation(f.ticker, 0.05, 0.03, 0.0))
+    j = Journal(":memory:")
+    rid = j.start_run("paper", True)
+    assert cli._cycle(Settings(universe=("KO", "PG")), j, rid, skip_research=True) == "ok"
+    warnings = events(j, "warning")
+    assert len(warnings) == 1 and "KO" in warnings[0]

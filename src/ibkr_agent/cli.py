@@ -84,8 +84,9 @@ def _cycle(s: Settings, journal: Journal, run_id: int, skip_research: bool) -> s
             try:
                 f = edgar.fundamentals(t)
                 v = value(f, price * (f.diluted_shares or 0))
-            except Exception as e:  # 单只股票的数据问题不应该让整个运行失败
+            except Exception as e:  # 单只股票的数据问题不应该让整个运行失败，但要记进日志库
                 log.warning("%s 报表获取失败：%s", t, e)
+                journal.log(run_id, "warning", {"kind": "fundamentals_failed", "ticker": t, "error": repr(e)})
                 f, v = None, None
             if v is not None:
                 baseline = v.expected_return
@@ -95,6 +96,10 @@ def _cycle(s: Settings, journal: Journal, run_id: int, skip_research: bool) -> s
                         journal.log(run_id, "view", view)
             candidates.append(Candidate(t, price, s.sectors.get(t, "unknown"), baseline, view))
 
+        if candidates and all(c.baseline_return is None for c in candidates):
+            # 一只都没算出基线（常见原因：SEC_USER_AGENT 没设、sec.gov 连不上）时，决策没有依据。
+            # 以前这种情况仍算成功，只是一直“本次不交易”，没人会发现，所以按出错处理并告警。
+            raise RuntimeError(f"{len(candidates)} 只股票都没算出报表基线，本次不交易。请看日志里的“报表获取失败”。")
         orders, scored = plan(candidates, holdings, account.net_liquidation, s.decision, s.costs, s.risk)
         for sc in scored:
             journal.log(run_id, "score", sc)
