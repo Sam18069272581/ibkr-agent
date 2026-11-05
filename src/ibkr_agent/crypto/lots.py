@@ -70,7 +70,7 @@ class LotBook:
         return [Lot(r[0], r[1], datetime.fromisoformat(r[2]), r[3], r[4]) for r in rows]
 
     def held(self, asset: str) -> float:
-        return sum(l.qty for l in self.lots(asset))
+        return sum(lot.qty for lot in self.lots(asset))
 
     def add(self, asset: str, ts: datetime, qty: float, unit_cost: float, source: str = "fill") -> None:
         self.db.execute(

@@ -119,11 +119,20 @@ crypto:                          # 币圈部分：ibkr-agent crypto run
     envelope_model: claude-opus-5-5
     envelope_effort: high
     envelope_valid_days: 8       # 每周跑一次 crypto envelope，过期的边界不再使用
-    max_tilt: 0.10               # Opus 最多把目标比例上下调 10 个百分点
+    envelope_history_days: 100   # 给 Opus 的日线天数
+    envelope_max_tokens: 16000   # Opus 一次评审最多输出多少 token，也是调用前预算检查的上限
+    envelope_timeout_seconds: 600
+    envelope_max_retries: 2
+    max_tilt: 0.05               # Opus 最多把买入目标上下调 5 个百分点；不能超过 rebalance_band 的一半。只影响买入
     max_band: 0.25               # 买入价区间最多离现价 ±25%
     gate_enabled: false          # true = 每笔买入前问快哨兵；没回答就不买，卖出不受影响
     gate_model: claude-haiku-5-5
     gate_effort: low
+    gate_max_tokens: 4000
+    gate_timeout_seconds: 30     # 快哨兵在下单路径上，超时就当没回答，不买
+    gate_max_retries: 1
     gate_max_p_invalidated: 0.30
     gate_max_p_abnormal: 0.30
     monthly_budget_usd: 8        # 本月 API 花费上限（美元），到了就不再调用
+    # prices:                    # 美元 / 百万 token：[输入, 输出, 写缓存, 读缓存]。默认价目在 crypto/config.py，
+    #   claude-haiku-5-5: [0.10, 0.50, 0.125, 0.01]   # 价格变了在这里覆盖对应模型即可

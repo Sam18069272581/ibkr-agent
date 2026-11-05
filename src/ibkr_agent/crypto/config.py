@@ -55,14 +55,30 @@ class CryptoAI:
     envelope_model: str = "claude-opus-5-5"
     envelope_effort: str = "high"
     envelope_valid_days: int = 8           # 每周跑一次，多给一天余量；过期就当没有边界
-    max_tilt: float = 0.10                 # Opus 最多把目标比例上下调 10 个百分点
+    envelope_history_days: int = 100       # 给 Opus 的日线天数（90 天高点要用到 90 天以上）
+    envelope_max_tokens: int = 16000       # Opus 一次评审最多输出多少 token（含思考），也是预算估算的上限
+    envelope_timeout_seconds: float = 600  # 每周评审单独跑，可以多等
+    envelope_max_retries: int = 2
+    max_tilt: float = 0.05                 # Opus 最多把买入目标上下调 5 个百分点；不能超过再平衡带的一半
     max_band: float = 0.25                 # 买入价区间最多离现价 ±25%
     gate_enabled: bool = False
     gate_model: str = "claude-haiku-5-5"
     gate_effort: str = "low"
+    gate_max_tokens: int = 4000
+    gate_timeout_seconds: float = 30       # 快哨兵在下单路径上，不能久等：超时就当没回答，不买
+    gate_max_retries: int = 1
     gate_max_p_invalidated: float = 0.30   # “失效条件已触发”的概率高于这个就不买
     gate_max_p_abnormal: float = 0.30      # “行情异常”的概率高于这个就不买
     monthly_budget_usd: float = 8.0        # 本月 API 花费到上限后不再调用（快哨兵不答 = 不买）
+    # 美元 / 百万 token：[输入, 输出, 写缓存, 读缓存]，按 2026-11 的 Anthropic 价目表。价格变了在 settings.yaml 里改。
+    # 表里没有的模型按表里每一列的最高价估算并告警，宁可高估花费。
+    prices: dict[str, tuple[float, float, float, float]] = field(default_factory=lambda: {
+        "claude-opus-5-5": (4.0, 20.0, 5.0, 0.20),
+        "claude-opus-5": (5.0, 25.0, 6.25, 0.50),
+        "claude-opus-4-8": (5.0, 25.0, 6.25, 0.50),
+        "claude-sonnet-5-5": (2.0, 10.0, 2.5, 0.20),
+        "claude-haiku-5-5": (0.10, 0.50, 0.125, 0.01),
+    })
 
 
 @dataclass(frozen=True)
@@ -112,18 +128,40 @@ def parse(raw: dict, journal_path: str = "data/journal.sqlite") -> CryptoSetting
         risk=CryptoRisk(**raw.get("risk", {})),
         execution=CryptoExecution(**raw.get("execution", {})),
         tax=CryptoTax(**raw.get("tax", {})),
-        ai=CryptoAI(**raw.get("ai", {})),
+        ai=_ai(raw.get("ai") or {}),
         journal_path=journal_path,
     )
+    if over := [a for a, t in targets.items() if t > s.risk.max_weight]:
+        raise ValueError(f"crypto.targets 里 {', '.join(over)} 的目标超过单币上限 risk.max_weight {s.risk.max_weight:.0%}")
     if not 0 < s.execution.price_band < 0.05:
         raise ValueError("crypto.execution.price_band 应在 0 到 5% 之间")
     if not 0 < s.risk.max_buy_fraction_per_run <= 1:
         raise ValueError("crypto.risk.max_buy_fraction_per_run 应在 0 到 1 之间")
     if s.cash_deploy_band < 0:
         raise ValueError("crypto.cash_deploy_band 不能是负数")
-    if not 0 <= s.ai.max_tilt <= 0.2:
-        raise ValueError("crypto.ai.max_tilt 应在 0 到 20% 之间")
+    if not 0 <= s.ai.max_tilt <= s.rebalance_band / 2:
+        # 倾斜只改买入目标，卖出线还是“配置目标 + 再平衡带”。倾斜用掉超过一半的带，买到倾斜后的目标
+        # 离卖出线就太近，价格一涨就卖回去，来回付手续费。
+        raise ValueError(f"crypto.ai.max_tilt 应在 0 到再平衡带的一半（{s.rebalance_band / 2:.0%}）之间，"
+                         f"现在是 {s.ai.max_tilt:.0%}")
+    for name in ("envelope_timeout_seconds", "gate_timeout_seconds", "envelope_max_tokens", "gate_max_tokens"):
+        if getattr(s.ai, name) <= 0:
+            raise ValueError(f"crypto.ai.{name} 应大于 0")
+    for name in ("envelope_max_retries", "gate_max_retries"):
+        if getattr(s.ai, name) < 0:
+            raise ValueError(f"crypto.ai.{name} 不能是负数")
     return s
+
+
+def _ai(raw: dict) -> CryptoAI:
+    """settings.yaml 里的 prices 只需要写要改的模型，其余用默认价目。"""
+    raw = dict(raw)
+    prices = dict(CryptoAI().prices)
+    for model, p in (raw.pop("prices", None) or {}).items():
+        if len(p) != 4 or any(float(x) < 0 for x in p):
+            raise ValueError(f"crypto.ai.prices.{model} 应是 4 个非负数：[输入, 输出, 写缓存, 读缓存]")
+        prices[str(model)] = tuple(float(x) for x in p)
+    return CryptoAI(**raw, prices=prices)
 
 
 def load(path: str | Path) -> CryptoSettings:

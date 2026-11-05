@@ -108,7 +108,10 @@ def test_marginal_tax_freigrenze():
     assert marginal_tax(1100, -100, cfg) == 0
 
 
-def make_lots(tax=CryptoTax(annual_threshold=0)):
+NO_FREIGRENZE = CryptoTax(annual_threshold=0)
+
+
+def make_lots(tax=NO_FREIGRENZE):
     return LotBook(Journal(":memory:").db, "test", tax)
 
 
@@ -264,7 +267,7 @@ def test_dry_run_places_nothing(tmp_path):
     lines = []
     assert run_cycle(s, ex, j, out=lines.append, clock=lambda: NOW, sleep=lambda _: None) == "ok"
     assert ex.placed == []
-    assert any("[演练] BUY BTC" in l for l in lines)
+    assert any("[演练] BUY BTC" in line for line in lines)
 
 
 def test_live_cycle_buys_and_records_lots(tmp_path):
@@ -289,12 +292,16 @@ def test_price_runs_away_between_plan_and_send(tmp_path):
     lines = []
     run_cycle(s, ex, j, out=lines.append, clock=lambda: NOW, sleep=lambda _: None)
     assert [p[0] for p in ex.placed] == ["ETH/EUR"]
-    assert any("不追" in l for l in lines)
+    assert any("不追" in line for line in lines)
 
 
 def test_crypto_high_water_mark_separate_from_stocks():
     j = Journal(":memory:")
-    a = j.start_run("paper", False); j.set_account(a, 3000, 3500, None, False); j.finish_run(a, "ok")
-    b = j.start_run("crypto-okx-demo", False); j.set_account(b, 300, 320, None, False); j.finish_run(b, "ok")
+    a = j.start_run("paper", False)
+    j.set_account(a, 3000, 3500, None, False)
+    j.finish_run(a, "ok")
+    b = j.start_run("crypto-okx-demo", False)
+    j.set_account(b, 300, 320, None, False)
+    j.finish_run(b, "ok")
     assert j.high_water_mark() == 3500
     assert j.high_water_mark("crypto-okx-demo") == 320
