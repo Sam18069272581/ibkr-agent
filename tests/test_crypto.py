@@ -229,6 +229,9 @@ def test_live_cycle_buys_and_records_lots(tmp_path):
     lots = LotBook(j.db, "okx-demo", s.tax)
     assert lots.held("BTC") == pytest.approx(ex.bal["BTC"])
     assert j.db.execute("SELECT COUNT(*) FROM fills").fetchone()[0] == 2
+    # 快照要带批次成本，否则报告会把所有持仓都算成浮盈
+    btc_cost = j.db.execute("SELECT avg_cost FROM snapshots WHERE ticker='BTC'").fetchone()[0]
+    assert btc_cost == pytest.approx(lots.lots("BTC")[0].unit_cost) and btc_cost > 0
 
 
 def test_price_runs_away_between_plan_and_send(tmp_path):

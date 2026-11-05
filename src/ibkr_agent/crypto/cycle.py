@@ -28,6 +28,13 @@ def account_name(s: CryptoSettings) -> str:
     return f"{s.exchange}-{'demo' if s.sandbox else 'live'}"
 
 
+def _avg_cost(lots: LotBook, asset: str) -> float:
+    """批次加权平均成本（含手续费）。报告用它判断持仓是否浮盈；没有批次时为 0。"""
+    ls = lots.lots(asset)
+    qty = sum(l.qty for l in ls)
+    return sum(l.qty * l.unit_cost for l in ls) / qty if qty > 0 else 0.0
+
+
 def _wait_fill(ex: Exchange, symbol: str, oid: str, timeout: int, sleep: Callable[[float], None],
                clock: Callable[[], float]):
     deadline = clock() + timeout
@@ -173,6 +180,7 @@ def _cycle(s, ex, journal, run_id, account, mode, out, clock, sleep) -> str:
                 journal.log(run_id, "warning", {"kind": "post_trade_mismatch", "ticker": a,
                                                 "exchange": after.get(a, 0.0), "lots": held})
                 alerts.send("币圈成交后对账不一致", f"{a}：交易所 {after.get(a, 0.0)}，记录 {held}")
-        journal.record_snapshot(run_id, [PositionSnapshot(a, after.get(a, 0.0), after.get(a, 0.0) * prices[a], 0.0)
+        journal.record_snapshot(run_id, [PositionSnapshot(a, after.get(a, 0.0), after.get(a, 0.0) * prices[a],
+                                                          _avg_cost(lots, a))
                                          for a in holdings])
     return status
