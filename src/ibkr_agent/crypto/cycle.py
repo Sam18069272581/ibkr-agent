@@ -107,6 +107,7 @@ def _buy_check(p: OrderPlan, s: CryptoSettings, ex: Exchange, books: dict, envel
         except Exception as e:
             if env is not None:
                 return f"拿不到日线，没法检查边界，不买：{e}", None
+            log.warning("%s 拿不到日线，快哨兵只看盘口和近期波动（材料里标为缺失）：%s", p.symbol, e)
     price = books[p.ticker].mid
     if env is not None:
         week_ago = close_days_ago(closes, WEEK_DAYS)
@@ -121,6 +122,51 @@ def _buy_check(p: OrderPlan, s: CryptoSettings, ex: Exchange, books: dict, envel
                                   s.execution.shock_window_minutes, closes, env, p.notional, s.quote), now)
         return (None if result.verdict == "pass" else result.why), result
     return None, None
+
+
+def _execute(p: OrderPlan, s: CryptoSettings, ex: Exchange, journal: Journal, run_id: int, lots: LotBook,
+             out: Callable[[str], None], clock: Callable[[], float], sleep: Callable[[float], None]) -> None:
+    book = ex.book(p.symbol)  # 下单前一秒重新取价
+    decision = preflight(p, book, clock(), s)
+    if not isinstance(decision, Send):
+        journal.log(run_id, "skipped", {"ticker": p.ticker, "side": p.side, "why": decision.why})
+        out(f"  ↷ {p.side} {p.ticker} 不下：{decision.why}")
+        return
+    amount = ex.amount_to_precision(p.symbol, decision.amount)
+    if amount <= 0 or amount < ex.min_amount(p.symbol):
+        journal.log(run_id, "skipped", {"ticker": p.ticker, "side": p.side, "why": "数量低于交易所最小下单量"})
+        out(f"  ↷ {p.side} {p.ticker} 数量 {amount} 低于交易所最小下单量")
+        return
+    line = f"{p.side} {p.ticker} {amount} @ {decision.price:.2f}（计划价 {p.ref_price:.2f} ±{p.band:.1%}）：{p.reason}"
+    if s.dry_run:
+        journal.log(run_id, "approved", {**asdict(p), "price": decision.price, "amount": amount})
+        out("  [演练] " + line)
+        return
+    oid = ex.place_post_only(p.symbol, p.side, amount, decision.price)
+    out("  → " + line)
+    st = _wait_fill(ex, p.symbol, oid, s.execution.fill_timeout_seconds, sleep, clock)
+    if st.filled <= 0:
+        journal.log(run_id, "skipped", {"ticker": p.ticker, "side": p.side, "why": "挂单超时未成交，已撤单"})
+        out(f"  ↷ {p.ticker} 挂单超时未成交，已撤单")
+        return
+    avg = float(st.average or decision.price)
+    ts = datetime.fromtimestamp(clock(), timezone.utc)
+    if st.fee_other:
+        journal.log(run_id, "warning", {"kind": "fee_in_other_currency", "ticker": p.ticker, "fees": st.fee_other})
+        alerts.send("币圈手续费币种无法换算", f"{p.ticker}：{st.fee_other}，成本里没有算上这部分")
+    fee_value = st.fee + st.fee_base * avg  # 统一换算成计价货币，记进成交和成本统计
+    if p.side == "BUY":
+        received = st.filled - st.fee_base  # 交易所从买到的币里扣手续费，实际到手的少一点
+        lots.add(p.ticker, ts, received, (st.filled * avg + st.fee) / received)
+        pnl = None
+    else:
+        given = st.filled + st.fee_base
+        pnl = lots.dispose(p.ticker, given, (st.filled * avg - st.fee) / given, ts)
+    c = s.costs
+    modelled = st.filled * avg * (c.maker_fee + (c.spread_bps + c.slippage_bps) / 10_000)
+    journal.record_fill(run_id, FillRecord(oid, ts.isoformat(), p.ticker, p.side, st.filled, avg, fee_value,
+                                           pnl, p.ref_price, modelled))
+    out(f"  ✓ 成交 {st.filled} @ {avg:.2f}，手续费 {fee_value:.4f} {s.quote}")
 
 
 def run_cycle(s: CryptoSettings, ex: Exchange, journal: Journal, out: Callable[[str], None] = print,
@@ -159,6 +205,15 @@ def _cycle(s, ex, journal, run_id, account, mode, out, clock, sleep, ai_client) 
     unpriced = [a for a in assets if a not in prices and bal.get(a, 0.0) > 0]
     if unpriced:
         journal.log(run_id, "warning", {"kind": "unpriced_holdings", "assets": unpriced})
+        # 目标币或本系统买过的币拿不到价格时，净值会少算它，其他币看起来超配而被卖出、回撤也会误报。
+        # 这种情况下整次不交易，也不把不完整的净值写进成绩。从没买过的非目标币（例如模拟盘自带的币）只记警告。
+        blocking = [a for a in unpriced if a in s.targets or lots.held(a) > 0]
+        if blocking:
+            why = f"{', '.join(blocking)} 拿不到价格，净值算不准，本次不交易"
+            alerts.send("币圈拿不到价格", why)
+            out(f"[{account}] {why}")
+            return "error"
+        out(f"  ! {', '.join(unpriced)} 没有 {s.quote} 交易对的价格，不计入净值")
 
     for a, q in holdings.items():
         if note := lots.sync(a, q, prices[a], now_dt):
@@ -222,41 +277,15 @@ def _cycle(s, ex, journal, run_id, account, mode, out, clock, sleep, ai_client) 
                      journal, run_id, out)
 
     for p in final:
-        book = ex.book(p.symbol)  # 下单前一秒重新取价
-        decision = preflight(p, book, clock(), s)
-        if not isinstance(decision, Send):
-            journal.log(run_id, "skipped", {"ticker": p.ticker, "side": p.side, "why": decision.why})
-            out(f"  ↷ {p.side} {p.ticker} 不下：{decision.why}")
-            continue
-        amount = ex.amount_to_precision(p.symbol, decision.amount)
-        if amount <= 0 or amount < ex.min_amount(p.symbol):
-            journal.log(run_id, "skipped", {"ticker": p.ticker, "side": p.side, "why": "数量低于交易所最小下单量"})
-            out(f"  ↷ {p.side} {p.ticker} 数量 {amount} 低于交易所最小下单量")
-            continue
-        line = f"{p.side} {p.ticker} {amount} @ {decision.price:.2f}（计划价 {p.ref_price:.2f} ±{p.band:.1%}）：{p.reason}"
-        if s.dry_run:
-            journal.log(run_id, "approved", {**asdict(p), "price": decision.price, "amount": amount})
-            out("  [演练] " + line)
-            continue
-        oid = ex.place_post_only(p.symbol, p.side, amount, decision.price)
-        out("  → " + line)
-        st = _wait_fill(ex, p.symbol, oid, s.execution.fill_timeout_seconds, sleep, clock)
-        if st.filled <= 0:
-            journal.log(run_id, "skipped", {"ticker": p.ticker, "side": p.side, "why": "挂单超时未成交，已撤单"})
-            out(f"  ↷ {p.ticker} 挂单超时未成交，已撤单")
-            continue
-        avg = float(st.average or decision.price)
-        ts = datetime.fromtimestamp(clock(), timezone.utc)
-        if p.side == "BUY":
-            lots.add(p.ticker, ts, st.filled, (st.filled * avg + st.fee) / st.filled)
-            pnl = None
-        else:
-            pnl = lots.dispose(p.ticker, st.filled, avg - st.fee / st.filled, ts)
-        c = s.costs
-        modelled = st.filled * avg * (c.maker_fee + (c.spread_bps + c.slippage_bps) / 10_000)
-        journal.record_fill(run_id, FillRecord(oid, ts.isoformat(), p.ticker, p.side, st.filled, avg, st.fee,
-                                               pnl, p.ref_price, modelled))
-        out(f"  ✓ 成交 {st.filled} @ {avg:.2f}，手续费 {st.fee:.4f}")
+        # 一笔单出错（网络、交易所临时故障）不能让后面的单和成交后对账都跳过：记下来、告警，接着做
+        try:
+            _execute(p, s, ex, journal, run_id, lots, out, clock, sleep)
+        except Exception as e:
+            status = "error"
+            log.exception("%s %s 下单出错", p.side, p.ticker)
+            journal.log(run_id, "order_error", {"ticker": p.ticker, "side": p.side, "error": repr(e)})
+            alerts.send("币圈下单出错", f"{p.side} {p.ticker}：{e!r}。请到交易所确认有没有残留挂单")
+            out(f"  ✗ {p.side} {p.ticker} 下单出错：{e}")
 
     if not s.dry_run:
         after = ex.balances()

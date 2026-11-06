@@ -84,8 +84,9 @@ def _cycle(s: Settings, journal: Journal, run_id: int, skip_research: bool) -> s
             try:
                 f = edgar.fundamentals(t)
                 v = value(f, price * (f.diluted_shares or 0))
-            except Exception as e:  # 单只股票的数据问题不应该让整个运行失败
+            except Exception as e:  # 单只股票的数据问题不应该让整个运行失败，但要记进日志库
                 log.warning("%s 报表获取失败：%s", t, e)
+                journal.log(run_id, "warning", {"kind": "fundamentals_failed", "ticker": t, "error": repr(e)})
                 f, v = None, None
             if v is not None:
                 baseline = v.expected_return
@@ -95,6 +96,10 @@ def _cycle(s: Settings, journal: Journal, run_id: int, skip_research: bool) -> s
                         journal.log(run_id, "view", view)
             candidates.append(Candidate(t, price, s.sectors.get(t, "unknown"), baseline, view))
 
+        if candidates and all(c.baseline_return is None for c in candidates):
+            # 一只都没算出基线（常见原因：SEC_USER_AGENT 没设、sec.gov 连不上）时，决策没有依据。
+            # 以前这种情况仍算成功，只是一直“本次不交易”，没人会发现，所以按出错处理并告警。
+            raise RuntimeError(f"{len(candidates)} 只股票都没算出报表基线，本次不交易。请看日志里的“报表获取失败”。")
         orders, scored = plan(candidates, holdings, account.net_liquidation, s.decision, s.costs, s.risk)
         for sc in scored:
             journal.log(run_id, "score", sc)
@@ -194,6 +199,7 @@ def crypto(config_path: str, command: str) -> int:
     if live and command == "run" and os.environ.get("CRYPTO_ALLOW_LIVE") != "yes":
         print("这是实盘配置（sandbox: false，dry_run: false）。确认要用真钱交易时，在 .env 里设置 CRYPTO_ALLOW_LIVE=yes。")
         return 2
+    in_cycle = False  # run_cycle 自己会记日志、告警；这里只补上它之前（连交易所、建客户端）的失败
     try:
         if cs.paper_local:
             ex = LocalPaperExchange(str(Path(cs.journal_path).with_name("crypto_paper.json")),
@@ -218,9 +224,12 @@ def crypto(config_path: str, command: str) -> int:
                 client = anthropic.Anthropic()
             except Exception as e:  # 没有 key 也要能跑：快哨兵不回答 = 不买，卖出照常
                 log.warning("没法创建 Claude 客户端，本次不买入：%s", e)
+        in_cycle = True
         status = run_cycle(cs, ex, journal, ai_client=client)
-    except Exception:
+    except Exception as e:
         log.exception("币圈运行失败")
+        if not in_cycle:  # 例如连不上交易所、缺 API key：日志里没有这次运行，不告警就没人知道每周任务没跑
+            alerts.send(f"币圈 {command} 没能启动", repr(e))
         return 1
     return 0 if status == "ok" else 3
 
